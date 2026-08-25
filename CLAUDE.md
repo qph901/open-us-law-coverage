@@ -11,7 +11,9 @@ citation refers to, with an auditable explanation, **before** any embeddings.
 
 **`PROPOSAL.md` is the source of truth for scope, design, and milestones — read it before making
 design decisions.** Milestone status lives in `README.md`. As of this writing M0 (dataset
-reconnaissance) is complete; M1+ (canonical store, USC parser/resolver) is not started.
+reconnaissance) is complete; the current phase is the **M0.5 commissioning spikes → M1 split**
+(M0.5A identity-collision analysis + M1A lossless source serializer first — see PROPOSAL.md
+"Milestones" and "First action for Claude Code").
 
 ## Environment & commands
 
