@@ -11,3 +11,6 @@ wheels/
 
 # Downloaded dataset snapshots (large, gated; reproduce via scripts/download.py)
 data/
+
+# DuckDB spill files (identity_collisions default --temp-dir)
+.duckdb_spill/

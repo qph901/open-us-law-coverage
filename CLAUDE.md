@@ -54,6 +54,23 @@ emit Markdown; neither has runtime dependencies on the other:
 - `src/open_us_law_coverage/snapshot_diff.py` → `reports/M0_act_id_stability.md`. Diffs the *same*
   corpus file across two snapshots to answer the one question a single snapshot can't:
   does `act_id` survive text-only amendment (vs. change on renumber/transfer)?
+- `src/open_us_law_coverage/identity_collisions.py` → `reports/M0.5A_identity_collisions.md` (M0.5A).
+  Enumerates every corpus where `act_id` repeats and classifies each collision group by *phenomenon*
+  (ETL duplicate row vs. multi-segment document vs. shared namespace) **before** recommending a key.
+  Built on **DuckDB**, not the polars/pyarrow harness: the exact-duplicate test needs a
+  `COUNT(DISTINCT md5(text))`-per-group aggregate over the 11 GB federal `text` column, and DuckDB
+  streams it in vectors + spills to `--temp-dir` under `--memory-limit`, where pyarrow
+  `read_row_group` OOM-kills the box (see below). Regenerate with:
+
+  ```bash
+  uv run python -m open_us_law_coverage.identity_collisions data/v2026.08_full/*.parquet \
+      --snapshot v2026.08 --out reports/M0.5A_identity_collisions.md \
+      --memory-limit 4GB --temp-dir /path/to/scratch/ddspill
+  ```
+
+  Examples use `min(act_id)` (not `any_value`) so the report is byte-stable across reruns. The
+  recommended `SourceIdentityStrategy` prose lives in `STRATEGY_SECTION` in the module (embedded, not
+  hand-edited into the report) so the report regenerates verbatim.
 
 ### Load-bearing design invariants (span the whole system — do not violate)
 
@@ -98,3 +115,12 @@ through polars in-memory, and **`text` is scanned row-group-at-a-time via pyarro
 handful of lineage-status rows. **Preserve this pattern** — any new full-snapshot pass over `text`
 must stay row-group-bounded, or it will crash on the regulations file. Validate changes by rerunning
 the 4-file sample and diffing against the committed `reports/M0_recon.md` (must be byte-identical).
+
+**Corollary for aggregation over `text`:** the row-group-bounded pyarrow pattern is for *per-row
+Python inspection* (recon's lineage scan). For *aggregates* over `text` (e.g. `COUNT(DISTINCT
+md5(text))` per `act_id` in `identity_collisions.py`), pyarrow `read_row_group` still materializes a
+whole 3.3 GB row-group and OOMs — **do not** reach for it. Use **DuckDB** with `SET memory_limit` +
+`SET temp_directory` instead; it streams the column and spills the aggregate to disk. This is why
+`duckdb` is a dependency. Empirically the polars streaming engine, pyarrow `iter_batches`, and the
+pyarrow `dataset` scanner *with a filter* **all** still materialize the whole row-group and OOM — only
+the DuckDB spill path (or recon's per-row-group release pattern) is safe on this file.

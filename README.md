@@ -28,7 +28,18 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
   editorial-notes apparatus, so `text_hash` over raw `text` overstates real
   amendment (~48% of USC "changed", almost all editorial-note growth). Hash the
   operative body separately.
-- M1+ (canonical store, USC parser/resolver, …): not started.
+- **M0.5A — Identity-collision analysis: complete.** Report at
+  [reports/M0.5A_identity_collisions.md](reports/M0.5A_identity_collisions.md).
+  Collisions are **entirely a regulations-corpus phenomenon** (7 of 229 files;
+  every statute/constitution `act_id` is unique). In `us_federal_regulations`
+  the file mixes two namespaces: `CFR_*` (codified sections, ~nearly unique) and
+  `FR_*` (Federal Register documents split into text segments — 99.99% of the
+  167k collision rows). State-regulation collisions are mostly literal duplicate
+  rows (Ohio: 539/555 groups byte-identical). Yields a per-corpus
+  `SourceIdentityStrategy`: `source_id = (state, corpus, act_id, segment_ordinal)`
+  for regulations, `legal_id = (state, corpus, act_id)` at document/section
+  granularity, duplicate rows flagged not silently deduped.
+- M1A (lossless `CanonicalSourceRecord`) and M0.5B+ : not started.
 
 ## Setup
 
@@ -59,6 +70,8 @@ The recon harness accepts any file glob, so it can be pointed at the full
 ## Layout
 
 - `src/open_us_law_coverage/recon.py` — M0 reconnaissance harness.
+- `src/open_us_law_coverage/identity_collisions.py` — M0.5A `act_id`-collision
+  analysis (DuckDB, spills to disk so the 11 GB federal `text` column is safe).
 - `scripts/download.py` — gated download + SHA-256 verification.
 - `reports/` — generated reports (committed).
 - `data/` — downloaded snapshots (gitignored; reproduce via `scripts/download.py`).
