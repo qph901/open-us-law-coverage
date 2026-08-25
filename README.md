@@ -1,0 +1,64 @@
+# Open US Law — Citation Parser & Resolver
+
+A citation detection / parsing / normalization / resolution subsystem over the
+[`vaquill/open-us-law`](https://huggingface.co/datasets/vaquill/open-us-law)
+dataset (snapshot **v2026.08**), commissioned on the US Code. See
+[PROPOSAL.md](PROPOSAL.md) for the full design and milestones.
+
+## Status
+
+- **M0 — Dataset reconnaissance: complete.** Report at
+  [reports/M0_recon.md](reports/M0_recon.md). Answers the proposal's `act_id`
+  behavior, crosswalk-field, hierarchy-cleanliness, and citation-format
+  questions against real Parquet (deterministic renumber lineage from text;
+  breadcrumb-based hierarchy; pre-extracted USC cross-references).
+- **M0 — Full-snapshot reconnaissance: complete.** Report at
+  [reports/M0_full_snapshot.md](reports/M0_full_snapshot.md). The recon harness
+  run over all **229 files / 2,978,617 rows** of `v2026.08`: one uniform
+  24-column schema everywhere, no crosswalk column anywhere, `act_id` 100%
+  populated across every corpus (but **not unique within the federal
+  regulations file** — a Tier-1 caveat), and 10,395 rows carrying a
+  disposition status that routes to lineage inference. Confirms the sample-set
+  findings hold at full scale.
+- **M0 — `act_id` stability across snapshots: answered.** Report at
+  [reports/M0_act_id_stability.md](reports/M0_act_id_stability.md). Diffing
+  `v2026.07` → `v2026.08` across federal/CA/AK: **no act_id was ever removed or
+  reissued**, and thousands survive text amendment → `act_id` is a safe Tier-1
+  identity seed. Key caveat: the USC `text` field bundles a volatile
+  editorial-notes apparatus, so `text_hash` over raw `text` overstates real
+  amendment (~48% of USC "changed", almost all editorial-note growth). Hash the
+  operative body separately.
+- M1+ (canonical store, USC parser/resolver, …): not started.
+
+## Setup
+
+The dataset is **gated** on Hugging Face. A human must accept the dataset terms
+and provide a read token:
+
+```bash
+export HF_TOKEN=hf_...   # a token with gated-repo read access
+```
+
+Install deps and download the M0 sample (verified against `SHA256SUMS.json`):
+
+```bash
+uv sync
+uv run python scripts/download.py            # M0 sample → data/v2026.08/
+```
+
+## Reproduce the M0 report
+
+```bash
+uv run python -m open_us_law_coverage.recon \
+  data/v2026.08/*.parquet --snapshot v2026.08 --out reports/M0_recon.md
+```
+
+The recon harness accepts any file glob, so it can be pointed at the full
+229-file snapshot once downloaded.
+
+## Layout
+
+- `src/open_us_law_coverage/recon.py` — M0 reconnaissance harness.
+- `scripts/download.py` — gated download + SHA-256 verification.
+- `reports/` — generated reports (committed).
+- `data/` — downloaded snapshots (gitignored; reproduce via `scripts/download.py`).
