@@ -14,9 +14,15 @@ design decisions.** Milestone status lives in `README.md`. As of this writing M0
 reconnaissance), M0.5A (identity-collision analysis), M0.5A.1 (collision-provenance +
 segment-order spike), and **M1A (the immutable `CanonicalSourceRecord` core)** are complete;
 the source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1.
-The **active task is M0.5B1** (USC anatomy, USLM-aligned — decide USLM runtime-vs-eval first),
-then M0.5B2 / B3 / C per the DAG, ending at the M1B semantic freeze (see PROPOSAL.md "Settled
-architecture", "Milestones", and "First action for Claude Code").
+The **active task is M1A.5** (the shared derived-artifact foundation: the `DerivedArtifactProvenance`
+multi-input DAG + `SourceIdentityAnnotation` / `DocumentClassificationAnnotation` /
+`QualityAnnotation`(duplicate-only) / `SourceDocumentAssembly`(`trivial_single_record_v1`) + the
+durable-FK test), then the **CFR assembly layer** (CFR-A1 eCFR-validated commissioning → CFR-A2
+`cfr_source_assembly_v1`) and the **M0.5B** spikes (B1 anatomy / B2 hierarchy / B3 CA probe) in
+parallel, ending at the M1B semantic freeze → M0.5C. Assembly precedes anatomy in the layer order;
+interfaces co-land in M1A.5 but the assembly *producer* runs after identity groups the members (see
+PROPOSAL.md "Settled architecture", "Milestones", "Design decisions", and "First action for Claude
+Code").
 
 ## Environment & commands
 
