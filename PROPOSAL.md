@@ -423,10 +423,10 @@ Combined the collision-provenance and segment-order spikes into one experiment, 
 **Exit-question verdict:** (1,2) evidence unavailable; (3) no for `FR_*`, partly for `CFR_*`; (4) at best **snapshot-observed** — no structural column (`section_number`/`display_path`/`breadcrumb`/`citation`/`subsection_count`) varies within the vast majority of distinct groups, so no source-defined ordinal exists; (5) yes — emit `segment_ordinal` from physical row order (`segment_order_method = physical_row_order`, `segment_order_confidence = snapshot_observed`), `raw_text_hash` as content tiebreak, `duplicate_row` on byte-identical rows, collapse to `legal_id = (state, corpus, act_id)`, and treat FR full-text concatenation as **invalid** (not merely best-effort) since FR rows are co-numbered captures. Federal Register defaults OFF for operative-law resolution, which makes the unresolved segmentation tolerable.
 This spike **hard-gated the source-identity contract** (it fixes the first `SourceIdentityAnnotation` strategy and the semantics of `segment_ordinal`) but not the immutable M1A core. **The contract may now freeze with the snapshot-observed-ordinal caveat.**
 
-### M1A — `CanonicalSourceRecord` immutable core *(start now, in parallel)*
-Because the immutable core contains zero interpretation, it does not wait on A.1. Build: the record model, Parquet reader, snapshot metadata, source-file checksums, `physical_row_ordinal`, `raw_text_hash`, verbatim 24-column preservation, and tests. Deliberately boring. Use a deterministic insertion-preserving read when assigning `physical_row_ordinal`.
-**Exit (golden-fixture invariants):** no text lost; every column preserved verbatim (null stays null, never invented); `source_record_id` deterministic from `(snapshot_version, source_file_checksum, physical_row_ordinal)`; `raw_text[start:end]` resolves for stored offsets; and the **boundary test** passes — a simulated "identity/anatomy/hierarchy/quality parser improved" must require **zero** changes to any `CanonicalSourceRecord`.
-The annotation layer starts after its inputs exist: `SourceIdentityAnnotation` after A.1; `DocumentClassificationAnnotation` and `QualityAnnotation` can begin immediately (their producers are versioned and regenerable regardless).
+### M1A — `CanonicalSourceRecord` immutable core *(COMPLETE)*
+Because the immutable core contains zero interpretation, it did not wait on A.1. Delivered in `src/open_us_law_coverage/source_record.py`: the frozen record model (`original_columns` as a read-only `MappingProxyType`), a schema-validating Parquet reader (`iter_source_records` streaming + row-group-bounded; `read_source_records` eager), snapshot metadata + source-file checksums (computed sha256, verified against `SHA256SUMS.json` in M0), insertion-preserving `physical_row_ordinal`, pure `compute_source_record_id` / `compute_raw_text_hash` functions, and verbatim 23-column preservation with `text` held once as `raw_text`. Deliberately boring.
+**Exit (golden-fixture invariants) — all passing** (`uv run pytest`, 21 tests in `tests/test_source_record.py` over a hermetic multi-row-group synthetic fixture + the committed AK-constitutions sample): no text lost; every column preserved verbatim (null stays null, never invented); `source_record_id` deterministic from `(snapshot_version, source_file_checksum, physical_row_ordinal)` and independent of content; `raw_text[start:end]` resolves for stored offsets (incl. multibyte unicode); and the **boundary test** passes — a simulated "identity/anatomy/hierarchy/quality parser improved" (two producer generations emitting materially different annotations) requires **zero** changes to any `CanonicalSourceRecord`, and the records are immutable (mutation raises).
+The annotation layer starts after its inputs exist: `SourceIdentityAnnotation` after A.1 (now unblocked); `DocumentClassificationAnnotation` and `QualityAnnotation` can begin immediately (their producers are versioned and regenerable regardless).
 
 ### M0.5B1 — USC anatomy (USLM-aligned)
 **First step, before any metric:** decide USLM's role — *runtime join* (pin `USLM_edition` as a regeneration input / fold into producer version) vs *eval-only* (heuristic runtime detection, USLM measures it). This choice defines whether `operative_text_hash` honors the two-input contract and therefore what the spike measures. USLM is an **eval-only oracle** by default (the production parser runs from `raw_text` + parser version, preserving the two-input reproducibility contract). The experiment is **alignment, not heading-regex**: map USLM structured elements → expected flattened representation → align with Open US Law text → derive USLM-grounded span labels. Taxonomy follows USLM concepts (operative provision, source credit, editorial/statutory/codification notes, amendments, disposition, other).
@@ -476,7 +476,7 @@ Extend detection/parsing/resolution to federal regulations (`17 CFR 240.10b-5`),
 ```
 M0.5A.1  segment/collision-provenance spike  ── hard-gates identity contract
    │
-   ├── (parallel) M1A immutable CanonicalSourceRecord core  ── starts now
+   ├── (parallel) M1A immutable CanonicalSourceRecord core  ── COMPLETE
    │
 freeze source-identity contract  (after A.1)
    │
@@ -534,9 +534,9 @@ Reserve **"canonical"** for the immutable source representation. `CanonicalLegal
 
 ## First action for Claude Code
 
-1. ~~Run **M0.5A.1**~~ **DONE** — `reports/M0.5A1_segment_provenance.md`. The source-identity contract may now freeze with the *snapshot-observed ordinal* caveat (cross-snapshot stability untestable until a second regulations snapshot; `FR_*` rows are co-numbered distinct captures, so no reading order / no valid concatenation).
-2. **Build the M1A immutable core** (now the active task) with the boundary test in its acceptance suite. It does not depend on A.1.
+1. ~~Run **M0.5A.1**~~ **DONE** — `reports/M0.5A1_segment_provenance.md`. The source-identity contract froze with the *snapshot-observed ordinal* caveat (cross-snapshot stability untestable until a second regulations snapshot; `FR_*` rows are co-numbered distinct captures, so no reading order / no valid concatenation).
+2. ~~Build the **M1A immutable core** with the boundary test in its acceptance suite~~ **DONE** — `src/open_us_law_coverage/source_record.py` + `tests/test_source_record.py` (`uv run pytest`, boundary test green).
 3. Do **not** anchor any durable artifact FK to `source_identity_key`.
-4. Then **M0.5B1** (decide USLM runtime-vs-eval first, then the alignment experiment) and **M0.5B2 / B3 / C** per the DAG (B→C dependency respected).
+4. **Now: M0.5B1** (decide USLM runtime-vs-eval first, then the alignment experiment), then **M0.5B2 / B3 / C** per the DAG (B→C dependency respected). `SourceIdentityAnnotation` (fed by A.1) can now be built on the frozen M1A core.
 
 Do not freeze `CanonicalLegalDocument` (M1B) until B1, B2, B3, and C have also reported. The one hard rule: keep `source_record_id`, `raw_text_hash`, and `legal_id` orthogonal — `legal_id` derives from proven source identity alone, and durable FKs anchor to `source_record_id`, never to `source_identity_key`.

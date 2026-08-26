@@ -51,7 +51,19 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
   nothing. Conclusion: `segment_ordinal` is **snapshot-observed physical row
   order** (no source-defined ordinal exists), a lossless row discriminator only,
   never a reading order. The source-identity contract may freeze with that caveat.
-- **M1A (lossless `CanonicalSourceRecord`): next.** M0.5B+ : not started.
+- **M1A — immutable `CanonicalSourceRecord` core: complete.** Lossless
+  serializer in
+  [`src/open_us_law_coverage/source_record.py`](src/open_us_law_coverage/source_record.py),
+  with the golden-fixture acceptance suite in
+  [`tests/test_source_record.py`](tests/test_source_record.py) (21 invariants,
+  incl. the **boundary test**: a simulated identity/anatomy/hierarchy/quality
+  parser improvement requires *zero* changes to any source record). Preserves all
+  24 columns verbatim (null stays null), holds `raw_text` byte-for-byte, and
+  derives `source_record_id` from physical coordinates only —
+  `(snapshot_version, source_file_checksum, physical_row_ordinal)` — never from
+  content or citation. The reader stays row-group-bounded, so a full-snapshot
+  pass is safe on the 11 GB federal regulations `text` column. Run:
+  `uv run pytest`. **M0.5B+ : not started.**
 
 ## Setup
 
@@ -84,6 +96,11 @@ The recon harness accepts any file glob, so it can be pointed at the full
 - `src/open_us_law_coverage/recon.py` — M0 reconnaissance harness.
 - `src/open_us_law_coverage/identity_collisions.py` — M0.5A `act_id`-collision
   analysis (DuckDB, spills to disk so the 11 GB federal `text` column is safe).
+- `src/open_us_law_coverage/segment_provenance.py` — M0.5A.1 collision-provenance
+  + segment-order spike (DuckDB `file_row_number`).
+- `src/open_us_law_coverage/source_record.py` — M1A immutable
+  `CanonicalSourceRecord` core (lossless serializer + boundary-enforcing model).
+- `tests/` — golden-fixture acceptance suite (`uv run pytest`).
 - `scripts/download.py` — gated download + SHA-256 verification.
 - `reports/` — generated reports (committed).
 - `data/` — downloaded snapshots (gitignored; reproduce via `scripts/download.py`).

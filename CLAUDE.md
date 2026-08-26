@@ -11,11 +11,12 @@ citation refers to, with an auditable explanation, **before** any embeddings.
 
 **`PROPOSAL.md` is the source of truth for scope, design, and milestones — read it before making
 design decisions.** Milestone status lives in `README.md`. As of this writing M0 (dataset
-reconnaissance), M0.5A (identity-collision analysis), and M0.5A.1 (collision-provenance +
-segment-order spike) are complete; the source-identity contract may now freeze (with the
-*snapshot-observed ordinal* caveat from M0.5A.1). The **active task is M1A** — the immutable
-`CanonicalSourceRecord` core with the boundary test in its acceptance suite (see PROPOSAL.md
-"Settled architecture", "Milestones", and "First action for Claude Code").
+reconnaissance), M0.5A (identity-collision analysis), M0.5A.1 (collision-provenance +
+segment-order spike), and **M1A (the immutable `CanonicalSourceRecord` core)** are complete;
+the source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1.
+The **active task is M0.5B1** (USC anatomy, USLM-aligned — decide USLM runtime-vs-eval first),
+then M0.5B2 / B3 / C per the DAG, ending at the M1B semantic freeze (see PROPOSAL.md "Settled
+architecture", "Milestones", and "First action for Claude Code").
 
 ## Environment & commands
 
@@ -40,8 +41,10 @@ HF_TOKEN=hf_... uv run python scripts/download.py            # M0 sample -> data
 > non-interactive `uv run` won't see it — export it explicitly in the command when in doubt.
 
 Downloaded snapshots live under `data/` and are **gitignored** (large + gated). Reports under
-`reports/` **are** committed. There is no test suite yet — the proposal calls for golden-fixture
-invariant tests starting at M1; don't invent test commands that don't exist.
+`reports/` **are** committed. The test suite starts at **M1A**: `uv run pytest` runs the
+golden-fixture acceptance suite in `tests/` (pytest is a dev dependency; config in
+`pyproject.toml`). The M0/M0.5 harnesses have no tests of their own — their contract is a
+byte-stable committed report; don't invent test commands beyond `uv run pytest`.
 
 ## Architecture
 
@@ -90,6 +93,24 @@ emit Markdown; neither has runtime dependencies on the other:
       --snapshot v2026.08 --out reports/M0.5A1_segment_provenance.md \
       --memory-limit 4GB --temp-dir /path/to/scratch/ddspill
   ```
+- `src/open_us_law_coverage/source_record.py` → `tests/test_source_record.py` (M1A). The immutable,
+  lossless `CanonicalSourceRecord` core — **not** a report harness; its deliverable is the model +
+  the golden-fixture acceptance suite. `CanonicalSourceRecord` is a `@dataclass(frozen=True)` with
+  `original_columns` as a `MappingProxyType`, so neither the record nor its preserved columns can be
+  mutated (this is what makes the boundary test enforceable). `source_record_id =
+  compute_source_record_id(snapshot_version, source_file_checksum, physical_row_ordinal)` and
+  `raw_text_hash = compute_raw_text_hash(raw_text)` are **pure module functions** so tests recompute
+  identity independently; the id derives from physical coordinates only (never content/citation), and
+  the hash is over **raw** `text` bytes (never normalized/operative). `iter_source_records` is the
+  streaming reader (row-group-bounded per the OOM invariant below — one row-group of `text` in flight,
+  pool released between groups); `read_source_records` is the eager wrapper for small/fixture files
+  only. It validates the 24-column schema (`SchemaMismatchError`) and assigns `physical_row_ordinal`
+  by an insertion-preserving read (row groups in file order, rows in row-group order). The tests are
+  hermetic — `tests/conftest.py` synthesizes a multi-row-group Parquet (unicode, null text, null
+  metadata, empty string, byte-identical twins); `test_real_sample_roundtrip` additionally checks the
+  committed `data/v2026.08/us_ak_constitutions.parquet` when present (skips otherwise). A cheap
+  no-`text`-scan snapshot manifest: `uv run python -m open_us_law_coverage.source_record
+  data/v2026.08/*.parquet --snapshot v2026.08`.
 
 ### Load-bearing design invariants (span the whole system — do not violate)
 
