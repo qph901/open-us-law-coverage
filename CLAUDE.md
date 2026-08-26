@@ -18,11 +18,14 @@ the source-identity contract has frozen with the *snapshot-observed ordinal* cav
 multi-input DAG + `SourceIdentityAnnotation`(shape) + `DocumentClassificationAnnotation`(deterministic)
 + `QualityAnnotation`(duplicate-only) + `SourceDocumentAssembly`(`trivial_single_record_v1`) + the
 durable-FK test all live in `src/open_us_law_coverage/derived/`; the concrete `SourceIdentityStrategy`
-producers and the CFR multi-row composer are **not** built yet. **M0.5B2** (hierarchy stress test) is
-**complete** (`reports/M0.5B2_hierarchy.md`). Remaining before the M1B semantic freeze: the concrete
+producers and the CFR multi-row composer are **not** built yet. **M0.5B2** (hierarchy stress test) and
+**M0.5B3** (CA abstraction-falsification probe) are **complete** (`reports/M0.5B2_hierarchy.md`,
+`reports/M0.5B3_ca_abstraction.md`; B3 forced **zero interface changes** to the built types — captured
+two producer/taxonomy notes: `duplicate_row` scopes to the identity group, and anatomy must carry a
+history bracket + not trust `act_status`). Remaining before the M1B semantic freeze: the concrete
 identity strategies, the **CFR assembly layer** (CFR-A1 eCFR-validated commissioning → CFR-A2
-`cfr_source_assembly_v1` — needs human-staged edition-pinned eCFR), and the other **M0.5B** spikes
-(B1 anatomy — needs edition-pinned USLM; B3 CA abstraction probe), then M1B → M0.5C. Assembly precedes
+`cfr_source_assembly_v1` — needs human-staged edition-pinned eCFR), and **M0.5B1** anatomy (needs
+edition-pinned USLM — B3 deferred full anatomy falsification to it), then M1B → M0.5C. Assembly precedes
 anatomy in the layer order; interfaces co-land in M1A.5 but the assembly *producer* runs after identity
 groups the members (see PROPOSAL.md "Settled architecture", "Milestones", "Design decisions", and
 "First action for Claude Code").
@@ -155,9 +158,23 @@ emit Markdown; neither has runtime dependencies on the other:
   bare-`(kind,identifier)` leaf ambiguity (why LOCAL resolution needs the absolute path), and
   sibling-order consistency (physical row order vs `natural_key` sort — the budget for RELATIVE-ref
   abstention). Report is byte-stable (deterministic first-seen ordering, sorted output). `EXIT_SECTION`
-  holds the qualitative verdict (embedded so it never drifts from the tables). Regenerate:
+  holds the qualitative verdict (embedded so it never drifts from the tables). Also defines
+  `StructuralPath` (the durable absolute anchor — `to_structural_path(nodes)`, key = `(kind,
+  identifier-or-label)` per step) that LOCAL/RELATIVE/CONTAINER resolution operates on. Regenerate:
   `uv run python -m open_us_law_coverage.hierarchy data/v2026.08_full/us_{ca,tx}_statutes.parquet
   data/v2026.08_full/us_{oh,de}_regulations.parquet --snapshot v2026.08 --out reports/M0.5B2_hierarchy.md`.
+- `src/open_us_law_coverage/ca_probe.py` → `reports/M0.5B3_ca_abstraction.md` + `tests/test_ca_probe.py`
+  (M0.5B3). The CA abstraction-falsification probe — **not** "run USC rules on CA"; it runs every
+  *built* artifact type (M1A.5 annotations/assembly, `HierarchyNode[]`/`StructuralPath`) over the full
+  CA statutes corpus (`iter_source_records`, row-group-bounded) and reports the interface changes CA
+  forces. Verdict: **none** to built types. Headline finding it exists to surface — **content
+  duplication ≠ identity duplication**: CA has thousands of byte-identical rows across *distinct*
+  provisions (distinct `act_id` + distinct `StructuralPath`), so `duplicate_row` is a content
+  conclusion scoped to the identity group, never a `legal_id` merge. Anatomy (`AnatomySpan`) is not
+  built (B1/USLM), so the probe records CA's anatomy requirements (leading history/source-credit
+  bracket; `act_status` unreliable) and defers full anatomy falsification to B1. Byte-stable.
+  Regenerate: `uv run python -m open_us_law_coverage.ca_probe data/v2026.08_full/us_ca_statutes.parquet
+  --snapshot v2026.08 --out reports/M0.5B3_ca_abstraction.md`.
 
 ### Load-bearing design invariants (span the whole system — do not violate)
 

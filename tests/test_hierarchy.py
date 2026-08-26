@@ -21,6 +21,7 @@ from open_us_law_coverage.hierarchy import (
     parse_breadcrumb,
     roundtrip_status,
     split_display_path,
+    to_structural_path,
 )
 
 # Real-shape fixtures ------------------------------------------------------
@@ -124,3 +125,34 @@ def test_natural_key_orders_dotted_numbers():
 
 def test_natural_key_none_sorts_last():
     assert sorted(["5", None, "1"], key=natural_key) == ["1", "5", None]
+
+
+# StructuralPath ------------------------------------------------------------
+
+def test_structural_path_from_nodes():
+    sp = to_structural_path(parse_breadcrumb(CA))
+    assert sp.depth == 5
+    assert sp.leaf == ("section", "2943")
+    assert sp.render() == "code:bpc/division:2/chapter:6.6/article:3/section:2943"
+
+
+def test_structural_path_unnumbered_falls_back_to_label():
+    # DE group has num "" -> the key uses the label so the path stays well-defined.
+    sp = to_structural_path(parse_breadcrumb(DE))
+    kinds = [k for k, _ in sp.steps]
+    assert kinds == ["title", "group", "regulation"]
+    assert sp.steps[1] == ("group", "Department of Labor, Office of the Secretary")
+
+
+def test_structural_path_distinguishes_same_leaf_under_different_parents():
+    # a bare leaf id is ambiguous; the absolute path is not.
+    a = to_structural_path(parse_breadcrumb(json.dumps([
+        {"type": "chapter", "num": "1", "label": "Chapter 1"},
+        {"type": "section", "num": "5", "label": "Section 5"},
+    ])))
+    b = to_structural_path(parse_breadcrumb(json.dumps([
+        {"type": "chapter", "num": "2", "label": "Chapter 2"},
+        {"type": "section", "num": "5", "label": "Section 5"},
+    ])))
+    assert a.leaf == b.leaf == ("section", "5")
+    assert a.render() != b.render()

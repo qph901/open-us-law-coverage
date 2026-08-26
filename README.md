@@ -86,7 +86,16 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
   of leaf `(kind,identifier)` keys sit under >1 parent) and **sibling order is
   only partly recoverable** from physical row order (8–90% by corpus), so
   RELATIVE resolution must operate on the absolute path and abstain on the rest.
-  **M0.5B1 (needs USLM) / B3 / CFR-A1 (needs eCFR): not started.**
+- **M0.5B3 — CA abstraction-falsification probe: complete.** Report at
+  [reports/M0.5B3_ca_abstraction.md](reports/M0.5B3_ca_abstraction.md). Runs every
+  built artifact type over the full 161,566-row CA statutes corpus: **zero
+  interface changes forced** — identity is 1:1 (`act_id` and `StructuralPath` both
+  100% unique), classification/hierarchy/assembly all represent CA without
+  distortion. Two requirements captured as *producer/taxonomy* notes: `duplicate_row`
+  must be scoped to the identity group (CA has 7,642 rows byte-identical across
+  *distinct* provisions — content ≠ identity), and anatomy (B1) must carry a
+  leading `[Repealed … and added by Stats. …]` history bracket and not trust
+  `act_status`. **M0.5B1 (needs USLM) / CFR-A1 (needs eCFR): not started.**
 
 ## Setup
 
@@ -127,7 +136,9 @@ The recon harness accepts any file glob, so it can be pointed at the full
   (provenance DAG + identity/classification/quality/assembly contracts and their
   first producers).
 - `src/open_us_law_coverage/hierarchy.py` — M0.5B2 hierarchy stress test
-  (breadcrumb → normalized `HierarchyNode[]` + topology report).
+  (breadcrumb → normalized `HierarchyNode[]` / `StructuralPath` + topology report).
+- `src/open_us_law_coverage/ca_probe.py` — M0.5B3 CA abstraction-falsification
+  probe (runs the built artifact types over CA; emits the interface-change list).
 - `tests/` — golden-fixture acceptance suite (`uv run pytest`).
 - `scripts/download.py` — gated download + SHA-256 verification.
 - `reports/` — generated reports (committed).

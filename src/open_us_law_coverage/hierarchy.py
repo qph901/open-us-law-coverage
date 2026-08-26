@@ -135,6 +135,38 @@ class HierarchyNode:
 
 
 # ---------------------------------------------------------------------------
+# StructuralPath — the durable, absolute structural anchor derived from a
+# HierarchyNode[] path. This is the key LOCAL/RELATIVE/CONTAINER resolution
+# operates on: M0.5B2 showed a *bare* leaf identifier is ambiguous (a section
+# number recurs under many chapters), so the absolute path is what identifies a
+# node. Falls back to the node label for unnumbered containers, so the key is
+# always well-defined.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class StructuralPath:
+    """An ordered root->leaf sequence of ``(kind, identifier-or-label)`` steps."""
+
+    steps: tuple[tuple[str, str], ...]
+
+    @property
+    def leaf(self) -> tuple[str, str]:
+        return self.steps[-1]
+
+    @property
+    def depth(self) -> int:
+        return len(self.steps)
+
+    def render(self) -> str:
+        return "/".join(f"{kind}:{ident}" for kind, ident in self.steps)
+
+
+def to_structural_path(nodes: Sequence[HierarchyNode]) -> StructuralPath:
+    """Absolute structural anchor for a parsed ``HierarchyNode[]`` path."""
+    return StructuralPath(steps=tuple(n.local_key() for n in nodes))
+
+
+# ---------------------------------------------------------------------------
 # Pure parsing — unit-tested in isolation.
 # ---------------------------------------------------------------------------
 
