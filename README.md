@@ -39,7 +39,19 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
   `SourceIdentityStrategy`: `source_id = (state, corpus, act_id, segment_ordinal)`
   for regulations, `legal_id = (state, corpus, act_id)` at document/section
   granularity, duplicate rows flagged not silently deduped.
-- M1A (lossless `CanonicalSourceRecord`) and M0.5B+ : not started.
+- **M0.5A.1 — Collision-provenance + segment-order spike: complete.** Report at
+  [reports/M0.5A1_segment_provenance.md](reports/M0.5A1_segment_provenance.md).
+  Two findings reshape M0.5A. (1) The v2026.07↔v2026.08 comparison A.1 called for
+  has an **empty domain** — regulations were *introduced* in v2026.08, so exit
+  questions on cross-snapshot segment/order stability are **untestable** until a
+  second regulations-bearing snapshot ships. (2) The `FR_*` distinct-text
+  collisions are **co-numbered distinct documents, not ordered segments**: their
+  rows are physically scattered, the continuation rate is ≈0%, and ≈96% of groups
+  restart with the same agency preamble — so concatenating them reconstructs
+  nothing. Conclusion: `segment_ordinal` is **snapshot-observed physical row
+  order** (no source-defined ordinal exists), a lossless row discriminator only,
+  never a reading order. The source-identity contract may freeze with that caveat.
+- **M1A (lossless `CanonicalSourceRecord`): next.** M0.5B+ : not started.
 
 ## Setup
 

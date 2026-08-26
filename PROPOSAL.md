@@ -6,15 +6,14 @@ Build a **citation detection / parsing / normalization / resolution** subsystem 
 
 The guiding rule for the whole system: **uncertainty about legal identity must be represented as data, never hidden inside ID-generation code.** The system must be able to say "these are the same provision," "strong evidence this was renumbered into that," or "cannot reliably establish continuity" — and keep those as materially different claims.
 
-The architecture that serves that rule is a **source/interpretation split**:
+The architecture that serves that rule is a **two-layer source/interpretation split**:
 
-- **CanonicalSourceRecord** — what the dataset told us. Lossless, immutable, almost no legal interpretation.
-- **CanonicalLegalDocument** — what our parsers *believe* the legal structure means. Derived, versioned, improvable.
-- **LegalChunk / CitationEdge / LineageEdge / DocumentAnatomy / HierarchyNode** — derived artifacts, each carrying its own provenance.
+- **CanonicalSourceRecord** — what the dataset told us. Lossless, immutable, zero legal interpretation of ours.
+- **Versioned derived annotations** — what our parsers *believe*, separated from the source by an explicit versioned boundary: `SourceIdentityAnnotation`, `DocumentClassificationAnnotation`, `QualityAnnotation`, `DocumentAnatomy`, `HierarchyTree`, and (downstream) `CanonicalLegalDocument` / `LegalChunk` / `CitationEdge` / `LineageEdge`.
 
-This gives uncertainty an explicit home and lets parsers improve without ever rewriting provenance.
+Every annotation carries its own `DerivedArtifactProvenance` and can be regenerated without ever rewriting the source record. This gives uncertainty an explicit home and lets parsers improve without churning provenance.
 
-**Status:** M0 (dataset reconnaissance) is **complete** — see `reports/M0_recon.md`, `reports/M0_full_snapshot.md`, and `reports/M0_act_id_stability.md`. The current phase is the **M0.5 commissioning spikes → M1 (source/interpretation split)** described below. This document is the single source of truth; it carries the design decisions converged during review and supersedes any earlier sequencing.
+**Status:** M0 (reconnaissance) and **M0.5A (identity-collision analysis)** are **complete** — see `reports/M0_recon.md`, `reports/M0_full_snapshot.md`, `reports/M0_act_id_stability.md`, and `reports/M0.5A_identity_collisions.md`. The current phase is **M0.5A.1** (segment/collision-provenance spike) → **M1A** (immutable source layer) → the **M0.5B** spikes → **M0.5C** (disposition extraction), ending at the **M1B** semantic freeze. This document is the single source of truth; it carries the design decisions converged during review and supersedes any earlier sequencing and any one-record `ingest → CanonicalLegalDocument` framing.
 
 ---
 
@@ -40,7 +39,7 @@ If we prove this before introducing embeddings, we have built the difficult part
 
 These are real and important; they belong in later layers, not the parser MVP.
 
-**Additional non-goals for the current (M0.5→M1) phase:** no embeddings/vector DB/reranker; no general state citation grammars; no full CA/state coverage (only a small CA commissioning sample runs end-to-end); no *resolved* lineage before M3; no official-source URL recovery.
+**Additional non-goals for the current (M0.5→M1) phase:** no embeddings/vector DB/reranker; no general state citation grammars; no full CA/state coverage (only a small CA commissioning sample runs end-to-end); no *resolved* `LineageEdge` before M3; no official-source URL recovery; no live/current USLM at runtime; **no renaming of `CanonicalLegalDocument` yet** (see Terminology).
 
 ---
 
@@ -60,7 +59,7 @@ M0 loaded the real v2026.08 Parquet (full 229-file / 2,978,617-row snapshot) and
 
 - **Uniform 24-column schema across all 229 files.** One normalizer handles every corpus and jurisdiction.
 - **No predecessor/successor crosswalk column exists anywhere.** Lineage across renumber/transfer/recodify must be **inferred**, not read from a field. The only lineage-adjacent signals are `act_status`, `cross_references_usc/cfr`, `public_laws_referenced`, and disposition prose in the text.
-- **`act_id` is a normalized, namespaced citation** (`USC_T42_C21_S1983`, `STATE_AK_…`, `SCONST_AK_…`). It is 100% populated in every corpus and is a good stable-source seed — **but it is NOT unique within the federal regulations file** (a genuine collision). Bare `act_id` semantics are therefore not universal; identity must go through a corpus-specific strategy (drives M0.5A).
+- **`act_id` is a normalized, namespaced citation** (`USC_T42_C21_S1983`, `STATE_AK_…`, `SCONST_AK_…`). It is 100% populated in every corpus and is a good stable-source seed — **but it is NOT unique within the federal regulations file** (a genuine collision). Bare `act_id` semantics are therefore not universal; identity must go through a corpus-specific strategy (drove M0.5A).
 - **`act_id` is stable across the v2026.07→v2026.08 transition**: no `act_id` was ever removed or reissued, and thousands survive text amendment → viable Tier-1 identity seed. **Caveat:** the USC `text` field bundles a volatile editorial-notes apparatus, so `text_hash` over raw `text` overstates real amendment (~48% of USC rows "changed," almost all editorial-note growth). The operative body must be hashed separately — this directly motivates the anatomy work (M0.5B1) and the identity correction below.
 - **Flat hierarchy columns are not reliable across jurisdictions.** California leaves `title_number` null on ~70% of rows (it namespaces by *code*, e.g. `Cal. BPC`); the real hierarchy lives in `breadcrumb` / `display_path`. USC and AK flat columns are ~100% clean.
 - **USC cross-references ship pre-extracted** (`cross_references_usc` as `"title:section"` arrays), dense on federal USC and sparse elsewhere, plus `public_laws_referenced`. A head start and an oracle for M4 — but **field-present rate is not a recall floor** (see Cross-cutting invariants).
@@ -68,147 +67,184 @@ M0 loaded the real v2026.08 Parquet (full 229-file / 2,978,617-row snapshot) and
 
 ---
 
-## Identity model (four orthogonal concepts)
+## Settled architecture (do not reopen)
+
+Two invariants govern everything:
+
+1. **Identity, content, and order are orthogonal.** `source_record_id`, `raw_text_hash`/`segment_fingerprint`, `segment_ordinal`, and `legal_id` each answer a different question; none substitutes for another.
+2. **Source facts vs. parser-derived interpretation are separated by a versioned boundary.** Preserve Open US Law's assertions verbatim in the immutable record; put *our interpretation of those assertions* in versioned annotations.
+
+The single reconciled pipeline (this is the one pipeline — no other diagram in this document supersedes it):
+
+```
+Open US Law snapshot-set (Parquet, gated)        + USLM oracle (edition-pinned)
+        │
+CanonicalSourceRecord            ← immutable / lossless (raw_text + 24 source fields verbatim)
+        │
+── versioned parser boundary ──────────────
+        │
+versioned derived annotations
+   ├── SourceIdentityAnnotation        (fed by M0.5A.1)
+   ├── DocumentClassificationAnnotation
+   ├── QualityAnnotation
+   ├── DocumentAnatomy                 (operative vs editorial spans; USLM-aligned for USC)
+   └── HierarchyTree / HierarchyNode[]
+        │
+CanonicalLegalDocument / LegalEntity mapping   (source_record_id --identified_as--> legal_id)
+        │
+LegalChunk
+        │
+CitationMention / LineageMention
+        │
+Hierarchy-aware Resolver → Alias Index → Lineage-aware Resolver
+        │
+CitationEdge / LineageEdge   (auditable; rule vs model distinguishable)
+        │
+Retrieval artifacts (exact-citation index first; BM25/dense LATER)
+        │
+RAG (LATER)
+```
+
+**The boundary test:** nothing in `CanonicalSourceRecord` may change because our identity rules, anatomy parser, hierarchy parser, duplicate detection, Federal-Register interpretation, or a quality detector improved. If any such change would require rewriting the source record, the boundary was violated. Rebuilding any derived layer (new anatomy parser, new chunker, new embedding model) must have **zero** effect on `source_record_id` / `raw_text_hash` / `legal_id`.
+
+---
+
+## Identity: four orthogonal concepts
 
 **Decision adopted this round:** `legal_id` must **not** derive from `raw_text_hash`, citation text, or any content/interpretation. M0 proved USC `raw_text` changes when editorial apparatus changes even though the provision does not; binding identity to content recreates that churn. Keep four concerns orthogonal:
 
-| Concept | Question it answers | Derived from |
-|---|---|---|
-| `source_id` | what the dataset called it | corpus-specific source identity (e.g. `act_id` + required namespace) |
-| `legal_id` | which legal object? | `source_id` **only**, where stability is proven; else snapshot-local |
-| `document_id` (a.k.a. `version_id`) | which snapshot representation? | `namespace(snapshot_version, legal_id-or-source_id)` |
-| `raw_text_hash` | which exact bytes? | `hash(raw_text)` |
+| Concept | Question it answers | Layer | Stability |
+|---|---|---|---|
+| `source_record_id` | which physical row in which snapshot? | immutable core | snapshot-local (nothing durable depends on it across snapshots) |
+| `segment_fingerprint` | which exact segment content? | content-addressed | changes iff bytes change (= representation identity, **not** logical continuity) |
+| `segment_ordinal` | in what observed order was this row presented? | ordering annotation | observational; may be snapshot-only |
+| `legal_id` | which stable legal/source object? | derived, established later | cross-snapshot where continuity is supported |
 
-`raw_text_hash` is deliberately **not** inside `document_id`: a harmless upstream reformat should yield the *same* document address with a *different* fingerprint, not a new identity. **Never** compute `legal_id = hash(canonical_citation)`; citation stays a resolvable alias/address, not identity.
+`source_identity_key` is **our current interpretation** of how source fields jointly identify an object → it lives in `SourceIdentityAnnotation`, never in the immutable core, and never as a durable foreign key (see the durable-FK rule). The earlier `document_id`/`version_id` framing is subsumed: the snapshot-local physical address is now `source_record_id`; durable references anchor to it, not to a separate document address.
 
 ### Stability tiers (how `legal_id` is assigned)
 
-- **Proven stable source** — where M0/M0.5 prove `source_id` is populated, unique in its namespace, and fixed under text-only amendment, seed `legal_id = namespace(source_id)`. `stability_class = proven`.
-- **Snapshot-local** — a row with no trustworthy stable identifier does **not** manufacture identity from its citation. Emit a deterministic snapshot-local `document_id`; `stability_class = snapshot_local`. Represent the gap honestly.
-- **Cross-snapshot lineage (inferred)** — for `renumbered` / `transferred` / `recodified` rows, where `source_id` is expected to break, infer lineage from multiple signals (high-similarity operative-text hash, hierarchy match, section-number transition, status flag, neighbor continuity, explicit disposition language). Record a `LineageEdge` with method/confidence/evidence. **Do not merge** A and B into one `legal_id` on similarity alone; link via `lineage_id`, keep distinct `legal_id`s.
-- **USC bonus:** cross-check `source_id` continuity against the USLM `@identifier`; divergence flags a likely renumbering and doubles as free lineage evidence and resolver validation.
+- **Proven stable source** — where M0/M0.5 prove source identity is populated, unique in its namespace, and fixed under text-only amendment, seed `legal_id` from that source identity. `stability_class = proven`.
+- **Snapshot-local** — a row with no trustworthy stable identifier does **not** manufacture identity from its citation. It is addressed by its `source_record_id`; `stability_class = snapshot_local`. Represent the gap honestly.
+- **Cross-snapshot lineage (inferred)** — for `renumbered` / `transferred` / `recodified` rows, where source identity is expected to break, infer lineage from multiple signals (high-similarity operative-text hash, hierarchy match, section-number transition, status flag, neighbor continuity, explicit disposition language). Record a `LineageEdge` with method/confidence/evidence. **Do not merge** A and B into one `legal_id` on similarity alone; link via `lineage_id`, keep distinct `legal_id`s.
+- **USC bonus:** cross-check source-identity continuity against the USLM `@identifier`; divergence flags a likely renumbering and doubles as free lineage evidence and resolver validation.
 
 ### Source identity is corpus-specific
 
 The federal-regulation `act_id` collision proves bare `act_id` is not a universal key. Identity resolution goes through a versioned strategy, never a hardcoded key:
 
 ```
-SourceIdentityStrategy          # one per corpus, versioned
-    identity_key(record)      -> source_id
+SourceIdentityStrategy          # one per corpus, versioned; emits into SourceIdentityAnnotation
+    identity_key(record)      -> source_identity_key
     namespace(record)         -> namespace tuple
     stability_class(record)   -> proven | snapshot_local | unknown
     confidence(record)
 ```
 
-No shared base class or DB schema may assume `act_id` alone is a key. USC may return `(jurisdiction, corpus, act_id)`; CFR may require an additional discriminator determined by M0.5A. Note `jurisdiction` is uniformly `"US"`; `state` is the real discriminator.
+`legal_id = (state, corpus, act_id)` etc. is emitted **by a strategy**, never a universal equation. Several strategies may currently emit identical-looking tuples; the strategy name preserves the semantics and the migration path. No shared base class or DB schema may assume `act_id` alone is a key. USC may return `(state, corpus, act_id)`; CFR/FR require the segment discriminator determined by M0.5A/A.1. Note `jurisdiction` is uniformly `"US"`; `state` is the real discriminator.
+
+### The durable-foreign-key rule
+
+Durable references between derived artifacts anchor to **`source_record_id`** (plus the artifact's own producer/version) — **never** to `source_identity_key`, which changes when a strategy improves. Stable legal entities get a `legal_id` later, with an explicit, versioned, evidence-bearing mapping:
+
+```
+source_record_id --identified_as--> legal_id
+```
+
+This keeps a mistaken identity strategy from corrupting provenance. `source_record_id` = physical truth; `source_identity_key` = current identity interpretation; `legal_id` = stable project-level legal entity once established. These never collapse into one concept.
 
 ---
 
-## Reproducibility contract
+## Data contracts
 
-Every derived artifact is regenerable from:
+The split is the point: `CanonicalSourceRecord` is lossless and immutable and carries no conclusion of ours; everything else is derived and carries `DerivedArtifactProvenance`. Concrete field lists; adapt names to the existing codebase.
 
-> **the pinned snapshot-SET + parser name/version/config + any pinned external-oracle edition**
-
-Three corrections to the naive "source record + parser version" model, learned in review:
-
-1. **Cross-record inputs.** Resolution (corpus-wide alias index), lineage (both endpoints, often cross-snapshot), sibling ordering for RELATIVE references (needs the sibling set), and contamination-based quality (needs repetition across rows) are reproducible only from the snapshot-*set*. Consequence: retaining adjacent snapshots is a **correctness** dependency; and `resolution_status = external` is snapshot-corpus-scoped (a citation `resolved` while GA is present is `external` in v2026.08 after GA's withdrawal), so resolution is recomputed per snapshot, never cached across corpus-composition changes.
-2. **External oracle.** If USC anatomy joins to USLM at runtime, `operative_text_hash = f(raw_text, anatomy_parser_version, USLM_edition)` — the oracle edition is a first-class input (or folded into the parser version). This must be decided (see M0.5B1).
-3. **`operative_text_hash` is meaningless without `(anatomy_parser_name, anatomy_parser_version)`.** Comparison requires identical parser identity or an explicit controlled recompute.
-
-Every derived artifact therefore carries one provenance model rather than inventing its own:
-
+### `CanonicalSourceRecord` — immutable (lossless)
 ```
-DerivedArtifactProvenance
-    source_document_id
-    parser_name
-    parser_version
-    parser_config_hash
-    oracle_edition        # nullable; e.g. USLM edition when used at runtime
-    generated_at
-```
-
-`DocumentAnatomy`, `StructuralTree`, `LegalChunk`, `ReferenceMention`, `LineageMention` all follow this model.
-
----
-
-## Anchoring rules (dual anchors)
-
-Durable references use the anchor type that matches their purpose; keep both.
-
-- **Semantic/legal anchor** — `document_id` + `structural_path`. Survives reparsing; used by citation edges, lineage, relative-reference targets.
-- **Exact provenance anchor** — `document_id` + raw `start/end` offsets + `raw_text_hash`, defined against immutable `raw_text`. Proves exactly which bytes a quote came from.
-
-Anatomy reprocessing may change anatomy span IDs, chunk IDs, and offsets *within* operative text, but must **never** invalidate raw-source offsets, because those are defined against immutable `raw_text`.
-
----
-
-## Architecture
-
-Canonical **source** store is the immutable ground truth; the canonical **legal document** and all indexes are derived and regenerable. Rebuilding a derived layer (new anatomy parser, new chunker, new embedding model) must have **zero** effect on `source_id` / `legal_id` / `document_id`.
-
-```
-Open US Law snapshot-set (Parquet, gated)            + USLM oracle (edition-pinned)
-        │
-   Lossless Serializer + Quality-flag slot
-        │
-   CanonicalSourceRecord   ← immutable ground truth (raw_text, source fields, provenance)
-        │
-   ┌──────────── DERIVED (versioned, regenerable, provenance-stamped) ────────────┐
-   │  DocumentAnatomy (operative vs editorial spans; USLM-aligned for USC)         │
-   │  HierarchyNode[] + StructuralTree   → CanonicalLegalDocument                  │
-   │  LegalChunk                                                                   │
-   │  Reference Detector → Classifier → Citation Grammar                           │
-   │  Hierarchy-aware Resolver → Alias Index → Lineage-aware Resolver              │
-   │  LineageMention → LineageEdge   ·   CitationEdge (auditable; rule vs model)   │
-   └──────────────────────────────────────────────────────────────────────────────┘
-        │
-   Retrieval Indexes (exact-citation index first; BM25/dense LATER)
-        │
-   RAG (LATER)
-```
-
----
-
-## Core data models
-
-Concrete field lists; adapt names to the existing codebase. The split is the point: `CanonicalSourceRecord` is lossless and immutable; everything else is derived and carries `DerivedArtifactProvenance`.
-
-### CanonicalSourceRecord (lossless, immutable)
-```
+source_record_id      # = hash(snapshot_version, source_file_checksum, physical_row_ordinal)
 snapshot_version
 source_file
-# identity (verbatim; interpreted only via a SourceIdentityStrategy)
-source_id                 # corpus-specific source identity, exactly as supplied
-# all 24 original schema fields, verbatim
-act_id, citation, citation_short, state, jurisdiction, document_type,
-title_number, title_name, chapter, chapter_name, section_number, section_title,
-breadcrumb, display_path, act_status, text, word_count, source_url,
-last_amended_year, subsection_count, cross_references_usc, cross_references_cfr,
-public_laws_referenced, year
-# text + fingerprint
-raw_text                  # = text, immutable
-raw_text_hash             # = hash(raw_text)   <-- over RAW bytes, NOT normalized/operative
-# quality (the ONE explicitly-mutable annotation)
-quality_status            # unknown | clean | suspicious | rejected  (default unknown)
-quality_flags[]
+source_file_checksum
+physical_row_ordinal
+original_columns      # all 24 Open US Law fields, verbatim (incl. act_id, citation,
+                      #   citation_short, state, jurisdiction, document_type, title_number,
+                      #   title_name, chapter, chapter_name, section_number, section_title,
+                      #   breadcrumb, display_path, act_status, word_count, source_url,
+                      #   last_amended_year, subsection_count, cross_references_usc,
+                      #   cross_references_cfr, public_laws_referenced, year)
+raw_text              # = the source `text` field, immutable
+raw_text_hash         # = hash(raw_text)   <-- over RAW bytes, NOT normalized/operative
 ```
-**Strictly lossless.** No anatomy, no cleaned/pre-split text, no semantic-hierarchy assumptions. The immutability/identity hash covers `raw_text` + source fields **only**; `quality_status`/`quality_flags` are **excluded** from it and versioned by detector — so a contamination detector can be upgraded without churning provenance. (The GA/NC withdrawal proves contamination enters at jurisdiction scale; we need somewhere to represent it.)
+**Strictly lossless.** No anatomy, no cleaned/pre-split text, no semantic-hierarchy assumptions, and — changed from the earlier draft — **no quality slot**: quality is now a versioned annotation (below), so a contamination detector can be upgraded without touching the source record. Storing Vaquill's own interpreted columns verbatim is **not** interpretation — we preserve what the dataset said, we do not re-derive it. The immutability/identity hash covers `raw_text` + source fields **only**.
 
-### CanonicalLegalDocument (derived, versioned)
+### `DerivedArtifactProvenance` — shared by every annotation/artifact
 ```
-# identity (from source, per the orthogonal table above)
-source_id
+source_record_id
+producer_name         # a.k.a. parser_name
+producer_version      # a.k.a. parser_version
+config_hash           # a.k.a. parser_config_hash
+oracle_edition        # nullable; e.g. USLM edition when used at runtime
+generated_at
+```
+`DocumentAnatomy`, `HierarchyTree`, `LegalChunk`, `ReferenceMention`, `LineageMention` all follow this model rather than inventing their own.
+
+### `SourceIdentityAnnotation` — versioned (fed by M0.5A.1)
+```
+(DerivedArtifactProvenance)
+strategy_name          # e.g. usc_section_v1 | state_statute_act_id_v1 |
+                       #      cfr_section_v1 | federal_register_document_v1
+source_identity_key
+segment_fingerprint    # content-addressed; (act_id, raw_text_hash, occurrence_index)
+segment_ordinal        # + segment_order_method, segment_order_confidence
+identity_scope         # record | provision | document | segment | unknown
+identity_status        # resolved | ambiguous | provisional | unsupported
+confidence
+evidence[]
+```
+Note on `segment_fingerprint`: the only place ordering re-enters is `occurrence_index` disambiguating byte-identical duplicate rows. That is harmless — such rows carry `duplicate_row` and are semantically interchangeable, so the index is losslessness bookkeeping, never a semantic distinction.
+
+### `DocumentClassificationAnnotation` — versioned
+```
+(DerivedArtifactProvenance)
+document_class    # codified_cfr | federal_register | statute | regulation |
+                 #   constitution | court_rule | guidance | unknown
+authority_role   # operative_primary_law | promulgation_record | editorial_material |
+                 #   guidance | unknown
+confidence
+```
+Even where trivially deterministic (an `FR_*` prefix ⇒ Federal Register), it is our semantic interpretation of a source field. Keep it regenerable. **`corpus` is not sufficient to describe legal role** — `document_class`/`authority_role` are first-class, and downstream policy must not assume same-corpus ⇒ same retrieval semantics.
+
+### `QualityAnnotation` — versioned
+```
+(DerivedArtifactProvenance)
+quality_status    # unknown | clean | suspicious | rejected  (default unknown)
+quality_flags[]   # e.g. duplicate_row (a cross-record conclusion, not a source assertion);
+                 #   navigation/footer text, header repetition, HTML remnants, encoding damage,
+                 #   suspiciously identical text across many sections, missing legal markers
+evidence[]
+```
+Quality is a cross-record conclusion, versioned by detector — kept **outside** the source record and its immutability hash. **Do not delete** suspicious rows — exclude from normal retrieval, preserve for investigation. (The withdrawn GA/NC statutes with leaked nav text are the cautionary tale; contamination enters at jurisdiction scale, so we need somewhere to represent it.)
+
+---
+
+### Semantic-layer models (derived; after the annotation layer)
+
+These consume the annotations above. They remain derived, versioned, and provenance-stamped.
+
+#### CanonicalLegalDocument (derived, versioned)
+```
+# identity (per the orthogonal table; via the identified_as mapping)
 legal_id
 lineage_id            # optional; groups historically related provisions across moves
-document_id           # this provision in THIS snapshot
+source_record_id[]    # the physical record(s) this document was assembled from
 identity_status       # authoritative | stable_source | inferred | snapshot_local | ambiguous
 identity_method       # e.g. open_us_law_source_id | cross_snapshot_renumbering_match
 identity_confidence   # 0..1 (for inferred)
 # legal metadata
 corpus, jurisdiction, canonical_citation, citation_aliases[]
+document_class, authority_role         # from DocumentClassificationAnnotation
 hierarchy             # HierarchyNode[] (see below), verbatim + normalized
-act_status, status_snapshot   # status is snapshot-qualified
+act_status, status_snapshot            # status is snapshot-qualified
 # text views
 operative_text        # anatomy-derived operative body
 operative_text_hash   # = f(raw_text, anatomy_parser_version, [USLM_edition])
@@ -216,26 +252,26 @@ normalized_text, normalized_text_hash
 # provenance: DerivedArtifactProvenance
 ```
 
-### DocumentAnatomy (derived)
+#### DocumentAnatomy (derived)
 Operative vs editorial/codification spans over `raw_text`. For USC, span labels are grounded in USLM concepts (`note`, `sourceCredit`, statutory/editorial/codification notes), not an invented taxonomy. Carries `DerivedArtifactProvenance`.
 
-### HierarchyNode (derived)
+#### HierarchyNode (derived)
 ```
-HierarchyNode(kind, identifier, label, source, confidence)
+HierarchyNode(kind, identifier, label, source, confidence, ordinal)
 # source ∈ {title_number, chapter, section_number, breadcrumb, display_path, uslm, ...}
 ```
-Downstream code (esp. RELATIVE-reference resolution) stays agnostic to which evidence produced the node.
+Never a fixed federal `title/chapter/section` shape. Downstream code (esp. RELATIVE-reference resolution) stays agnostic to which evidence produced the node.
 
-### CitationAlias (temporal)
+#### CitationAlias (temporal)
 ```
 citation, legal_id, valid_from_snapshot, valid_to_snapshot
 alias_type            # canonical | former | historical | alternate
 ```
 Old addresses carry temporal metadata so an old cite is never silently resolved to a new provision without being marked historical.
 
-### ReferenceMention (pre-resolution)
+#### ReferenceMention / CitationMention (pre-resolution)
 ```
-reference_id, source_document_id, source_legal_id
+reference_id, source_record_id, source_legal_id
 raw_reference_text, start_char, end_char, structural_path
 reference_type        # ABSOLUTE | QUALIFIED | LOCAL | RELATIVE | CONTAINER
 parsed_jurisdiction, parsed_corpus, parsed_code,
@@ -244,20 +280,20 @@ parser_method         # e.g. usc_grammar_v1  (+ DerivedArtifactProvenance)
 parser_confidence
 ```
 
-### ResolvedCitation (post-resolution)
+#### ResolvedCitation (post-resolution)
 ```
 reference_id
-target_legal_id, target_document_id, target_lineage_id
+target_legal_id, target_source_record_id, target_lineage_id
 resolution_method     # deterministic grammar | hierarchy | alias | lineage | model
 resolution_confidence, candidate_targets[]
 resolution_status     # resolved | ambiguous | unresolved | external | invalid
 ```
 **Never force an ambiguous citation to resolve.** An explicit `unresolved`/`ambiguous` beats a confidently wrong edge. `external` (correctly out-of-corpus) is a **success**, kept distinct in metrics.
 
-### LineageMention (unresolved; derived from anatomy spans)
+#### LineageMention (unresolved; derived from anatomy spans)
 ```
 LineageMention
-    source_document_id
+    source_record_id
     relationship_type          # renumbered_to | transferred_to | recodified_as | ...
     raw_target_reference       # e.g. "§ 321"
     structural/raw span
@@ -265,10 +301,10 @@ LineageMention
     resolution_status = unresolved
 ```
 
-### CitationGraphEdge / LineageEdge (auditable)
+#### CitationGraphEdge / LineageEdge (auditable)
 ```
 CitationGraphEdge
-    source_legal_id, source_document_id, target_legal_id, target_document_id
+    source_legal_id, source_record_id, target_legal_id, target_source_record_id
     raw_reference_text, reference_type, structural_path, start_char, end_char
     parser_method, resolver_method, parser_confidence, resolver_confidence
     snapshot_version
@@ -279,6 +315,31 @@ LineageEdge
     snapshot_from, snapshot_to
 ```
 A deterministic-grammar edge and an LLM-derived edge must never be indistinguishable in storage.
+
+---
+
+## Reproducibility contract
+
+Every derived artifact is regenerable from:
+
+> **the pinned snapshot-SET + producer name/version/config + any pinned external-oracle edition**
+
+Three corrections to the naive "source record + parser version" model, learned in review:
+
+1. **Cross-record inputs.** Resolution (corpus-wide alias index), lineage (both endpoints, often cross-snapshot), sibling ordering for RELATIVE references (needs the sibling set), and contamination-based quality (needs repetition across rows) are reproducible only from the snapshot-*set*. Consequence: retaining adjacent snapshots is a **correctness** dependency; and `resolution_status = external` is snapshot-corpus-scoped (a citation `resolved` while GA is present is `external` in v2026.08 after GA's withdrawal), so resolution is recomputed per snapshot, never cached across corpus-composition changes.
+2. **External oracle.** If USC anatomy joins to USLM at runtime, `operative_text_hash = f(raw_text, anatomy_parser_version, USLM_edition)` — the oracle edition is a first-class input (or folded into the producer version). This must be decided (see M0.5B1).
+3. **`operative_text_hash` is meaningless without `(anatomy_parser_name, anatomy_parser_version)`.** Comparison requires identical producer identity or an explicit controlled recompute.
+
+---
+
+## Anchoring rules (dual anchors)
+
+Durable references use the anchor type that matches their purpose; keep both, and — per the durable-FK rule — anchor to physical/stable keys, never to `source_identity_key`.
+
+- **Semantic/legal anchor** — `legal_id` (once established; else `source_record_id`) + `structural_path`. Survives reparsing; used by citation edges, lineage, relative-reference targets.
+- **Exact provenance anchor** — `source_record_id` + raw `start/end` offsets + `raw_text_hash`, defined against immutable `raw_text`. Proves exactly which bytes a quote came from.
+
+Anatomy reprocessing may change anatomy span IDs, chunk IDs, and offsets *within* operative text, but must **never** invalidate raw-source offsets, because those are defined against immutable `raw_text`.
 
 ---
 
@@ -309,7 +370,7 @@ query → dense retrieval                                       (natural-languag
 
 ## Chunking (parser owns structure; retrieval is downstream)
 
-- One source record → one `CanonicalLegalDocument`.
+- One `CanonicalLegalDocument` → its chunks.
 - Short section → one chunk. Do **not** split a section just to hit a token target.
 - Oversized section → split on **structural markers** `(a)/(1)/(A)/(i)`, not arbitrary token windows.
 - Every chunk keeps `structural_path` (primary, survives re-chunking) and raw `start/end` offsets (secondary, exact-quote verification, defined against immutable `raw_text`).
@@ -338,66 +399,55 @@ Separate **`external` (correct out-of-corpus)** from **`unresolved` (resolver fa
 
 ## Quality gate (ingestion, before indexing)
 
-Assign `quality_status ∈ {unknown, clean, suspicious, rejected}` + `quality_flags[]`, stored on the source record **outside** the immutability hash (see CanonicalSourceRecord). Candidate flags: navigation/footer text, header repetition, HTML remnants, abnormal boilerplate repetition, suspiciously identical text across many sections, encoding damage, missing expected legal markers. **Do not delete** suspicious rows — exclude from normal retrieval, preserve for investigation. (The withdrawn GA/NC statutes with leaked nav text are the cautionary tale.)
+Assign `quality_status ∈ {unknown, clean, suspicious, rejected}` + `quality_flags[]` via the versioned `QualityAnnotation` (see Data contracts) — **not** on the source record. Candidate flags: navigation/footer text, header repetition, HTML remnants, abnormal boilerplate repetition, suspiciously identical text across many sections, encoding damage, missing expected legal markers. **Do not delete** suspicious rows — exclude from normal retrieval, preserve for investigation.
 
 ---
 
 ## Milestones (each ships with tests + acceptance criteria)
 
-Sequencing is a DAG, not a straight line:
-
-```
-M0.5A  Identity collision analysis ──┐ (gates identity contract only)
-                                      │
-M1A  Lossless CanonicalSourceRecord  ◄┘  (storage mechanics may start immediately;
-                                          identity contract freezes after A)
-        │  in parallel (calendar time):
-        ├── M0.5B1  USC anatomy (USLM-aligned)   ──┐ (B→C internal dependency)
-        ├── M0.5B2  Hierarchy stress test (CA/TX/hard regulation corpus)
-        ├── M0.5B3  CA abstraction probe (do the artifact TYPES survive CA?)
-        └── M0.5C   Disposition extraction (consumes anatomy spans → LineageMention)
-        ▼
-M1B  Freeze CanonicalLegalDocument + derived-artifact interfaces
-        ▼
-M2 USC detector/parser → M3 resolver → M3.5 resolve disposition into lineage edges → M4 general in-body refs
-        ▼
-Later: CFR extension · State framework
-```
-
-**Gate semantics (precise):** M0.5A gates the *source-identity contract*, not raw ingestion. The lossless record serializer can start immediately because it need not know how `legal_id` works. B and C need not block M1A; C must not start before B yields a trustworthy codification/disposition span.
+Sequencing is a DAG, not a straight line (see Sequencing below).
 
 ### M0 — Dataset reconnaissance *(COMPLETE)*
 Full-snapshot schema/behavior report + `v2026.07→v2026.08` diff. See `reports/M0_recon.md`, `reports/M0_full_snapshot.md`, `reports/M0_act_id_stability.md`, and "What M0 established" above.
 
 ### M0.5A — Identity collision analysis *(COMPLETE)*
-Enumerate every corpus with duplicate `act_id` (federal regulations first). **Explanation before a key:** a composite key can make collisions technically unique while hiding a semantic bug, so distinguish (a) same `act_id` + different subsection rows, (b) `act_id` accidentally reused by upstream ETL, (c) `act_id` shared across related regulatory documents (e.g. CFR vs Federal Register sharing a namespace). Report per collision group: `row count | distinguishing columns | text relationship | hierarchy relationship | source_url relationship | hypothesized cause | recommended identity policy`.
-**Exit:** each collision class explained by phenomenon; a recommended per-corpus `SourceIdentityStrategy`. Then freeze the source-identity contract.
-**Result** (`reports/M0.5A_identity_collisions.md`): collisions are entirely a regulations phenomenon (7 of 229 files; all statute/constitution `act_id`s unique). All three hypothesized causes occur: (a) dominates `us_federal_regulations` `FR_*` — Federal Register documents split into text segments (165,044 of 165,067 `FR` collision groups all-distinct-text), (b) dominates state regs (Ohio 539/555 groups byte-identical) and the `CFR_*` residue (232 identical groups), (c) is the `CFR_*` vs `FR_*` namespace split coexisting in one file. Recommended strategy: `source_id = (state, corpus, act_id, segment_ordinal)` for regulations (ordinal synthesized from row order — dataset has no per-segment discriminator; `section_number` is constant within an `FR` group), `legal_id = (state, corpus, act_id)` at document/section granularity, duplicate rows carry `quality_flags += duplicate_row` (kept for losslessness, collapsed at `legal_id`), and `document_class` tags `federal_register` vs `codified_cfr`. **Source-identity contract may now freeze.**
+Enumerate every corpus with duplicate `act_id`. **Explanation before a key:** a composite key can make collisions technically unique while hiding a semantic bug, so distinguish (a) same `act_id` + different subsection rows, (b) `act_id` accidentally reused by upstream ETL, (c) `act_id` shared across related regulatory documents (e.g. CFR vs Federal Register sharing a namespace).
+**Result** (`reports/M0.5A_identity_collisions.md`): collisions are entirely a regulations phenomenon (7 of 229 files; all statute/constitution `act_id`s unique). All three causes occur: (a) dominates `us_federal_regulations` `FR_*` — 165,044 of 165,067 `FR` collision groups are all-distinct-text (M0.5A read these as segmented documents; **M0.5A.1 corrected that** — they are co-numbered *distinct* documents, not ordered segments); (b) dominates state regs (Ohio 539/555 groups byte-identical) and the `CFR_*` residue (232 identical groups); (c) is the `CFR_*` vs `FR_*` namespace split coexisting in one file. Recommended strategy: `source_identity_key = (state, corpus, act_id, segment_ordinal)` for regulations (ordinal synthesized from row order — dataset has no per-segment discriminator; `section_number` is constant within an `FR` group), `legal_id = (state, corpus, act_id)` at document/section granularity, duplicate rows carry `quality_flags += duplicate_row` (kept for losslessness, collapsed at `legal_id`), and `document_class` tags `federal_register` vs `codified_cfr`. The recommendation is a **starting strategy**; M0.5A.1 hard-gates the frozen contract.
 
-### M1A — Lossless CanonicalSourceRecord
-Strictly-lossless serializer per the data model above: `snapshot_version`, `source_file`, all original fields verbatim, `raw_text`, `raw_text_hash`, source-identity fields, and the `quality_status`/`quality_flags` slot. No anatomy, no cleaned/pre-split text, no semantic-hierarchy assumptions.
-**Exit (golden-fixture invariants):** no text lost; `source_id`/`legal_id`/`document_id` deterministic and orthogonal per the identity table; `raw_text[start:end]` resolves for stored offsets; null source fields stay null (never invented); `quality_status` outside the immutability hash; snapshot + status survive ingestion.
+### M0.5A.1 — Collision-provenance + segment-order spike *(COMPLETE)*
+Combined the collision-provenance and segment-order spikes into one experiment, **evidence-based, not an upstream-ETL trace**. Report at `reports/M0.5A1_segment_provenance.md`, built by `open_us_law_coverage.segment_provenance` (DuckDB `file_row_number` + memory-limited spill over the 11 GB federal `text` column).
+**Result — two findings reshape M0.5A:**
+1. **The cross-snapshot premise is empty.** Regulations — the only corpora where `act_id` collides — were *introduced* in v2026.08 (HF commit `2806c009c55c`); v2026.07 has **0 of 17** regulations files and none of the 7 colliding files. Exit questions 1, 2, and the "dataset-defined vs. snapshot-observed" half of 4 are therefore **untestable** and answered *evidence unavailable* — a standing correctness dependency to re-run when a second regulations-bearing snapshot ships, **not** a proven-stable result.
+2. **`FR_*` distinct-text collisions are co-numbered distinct documents, not ordered segments** — correcting M0.5A's "one document split into ordered segments" reading. Evidence: their rows are physically **scattered** (essentially none form an adjacent block), the sampled **continuation rate is ≈0%** (no seam continues mid-sentence into the next row), and **≈96% of groups restart with the same agency preamble**. `CFR_*` is genuinely mixed (a minority of true continuations). So concatenating FR rows "in order" reconstructs nothing; they are alternative/self-contained captures under one Federal-Register number.
+
+**Exit-question verdict:** (1,2) evidence unavailable; (3) no for `FR_*`, partly for `CFR_*`; (4) at best **snapshot-observed** — no structural column (`section_number`/`display_path`/`breadcrumb`/`citation`/`subsection_count`) varies within the vast majority of distinct groups, so no source-defined ordinal exists; (5) yes — emit `segment_ordinal` from physical row order (`segment_order_method = physical_row_order`, `segment_order_confidence = snapshot_observed`), `raw_text_hash` as content tiebreak, `duplicate_row` on byte-identical rows, collapse to `legal_id = (state, corpus, act_id)`, and treat FR full-text concatenation as **invalid** (not merely best-effort) since FR rows are co-numbered captures. Federal Register defaults OFF for operative-law resolution, which makes the unresolved segmentation tolerable.
+This spike **hard-gated the source-identity contract** (it fixes the first `SourceIdentityAnnotation` strategy and the semantics of `segment_ordinal`) but not the immutable M1A core. **The contract may now freeze with the snapshot-observed-ordinal caveat.**
+
+### M1A — `CanonicalSourceRecord` immutable core *(start now, in parallel)*
+Because the immutable core contains zero interpretation, it does not wait on A.1. Build: the record model, Parquet reader, snapshot metadata, source-file checksums, `physical_row_ordinal`, `raw_text_hash`, verbatim 24-column preservation, and tests. Deliberately boring. Use a deterministic insertion-preserving read when assigning `physical_row_ordinal`.
+**Exit (golden-fixture invariants):** no text lost; every column preserved verbatim (null stays null, never invented); `source_record_id` deterministic from `(snapshot_version, source_file_checksum, physical_row_ordinal)`; `raw_text[start:end]` resolves for stored offsets; and the **boundary test** passes — a simulated "identity/anatomy/hierarchy/quality parser improved" must require **zero** changes to any `CanonicalSourceRecord`.
+The annotation layer starts after its inputs exist: `SourceIdentityAnnotation` after A.1; `DocumentClassificationAnnotation` and `QualityAnnotation` can begin immediately (their producers are versioned and regenerable regardless).
 
 ### M0.5B1 — USC anatomy (USLM-aligned)
-**First step, before any metric:** decide USLM's role — *runtime join* (pin `USLM_edition` as a regeneration input / fold into parser version) vs *eval-only* (heuristic runtime detection, USLM measures it). This choice defines whether `operative_text_hash` honors the two-input contract and therefore what the spike measures. The experiment is **alignment, not heading-regex**: map USLM structured elements → expected flattened representation → align with Open US Law text → derive USLM-grounded span labels.
-**Exit:** the asymmetric anatomy metrics (see Evaluation) measured on a USLM-aligned sample plus a manually-reviewed gold subset; `raw` vs `operative` change-rate measured across the v2026.07→v2026.08 transition.
+**First step, before any metric:** decide USLM's role — *runtime join* (pin `USLM_edition` as a regeneration input / fold into producer version) vs *eval-only* (heuristic runtime detection, USLM measures it). This choice defines whether `operative_text_hash` honors the two-input contract and therefore what the spike measures. USLM is an **eval-only oracle** by default (the production parser runs from `raw_text` + parser version, preserving the two-input reproducibility contract). The experiment is **alignment, not heading-regex**: map USLM structured elements → expected flattened representation → align with Open US Law text → derive USLM-grounded span labels. Taxonomy follows USLM concepts (operative provision, source credit, editorial/statutory/codification notes, amendments, disposition, other).
+**Exit:** the asymmetric anatomy metrics — operative-text retention recall (weighted highest), editorial contamination into operative body, alignment coverage, exact-boundary rate, unmatched OUL text, unmatched USLM material — on a USLM-aligned sample plus a manually-reviewed gold subset; `raw` vs `operative` change-rate measured across the v2026.07→v2026.08 transition.
 
 ### M0.5B2 — Hierarchy stress test
-Run on CA statutes, TX statutes, and one 0%-flat-hierarchy regulation corpus. Output is a normalized `HierarchyNode[]` (not a "breadcrumb parser"), so downstream code stays agnostic to which evidence produced each node.
+Run on CA statutes, TX statutes, and one 0%-flat-hierarchy regulation corpus. Output a normalized `HierarchyNode[]` (`kind`, `identifier`, `label`, `source`, `confidence`, `ordinal`), never a fixed federal `title/chapter/section` shape. LOCAL/RELATIVE/CONTAINER resolution operates only on the normalized tree.
 **Exit:** coverage; exact reconstruction where ground truth exists; abstention rate; sibling-ordering consistency (RELATIVE references depend on it).
 
 ### M0.5B3 — CA abstraction probe
-Not "run USC heuristics on CA" — parser rules are *expected* to be corpus-specific and their failure teaches little. Instead: take the artifact **output types** from B1/B2 (`DocumentAnatomy`, `HierarchyNode[]`, `StructuralPath`, `DerivedArtifactProvenance`) and test whether they can represent a small CA sample **faithfully** (different anatomy categories, hierarchy node kinds, non-tree structures, article/part/division peculiarities, intermixed history, multiple breadcrumb conventions).
+Not "run USC heuristics on CA" — parser rules are *expected* to be corpus-specific and their failure teaches little. Instead: take the artifact **output types** from B1/B2 (`DocumentAnatomy`, `AnatomySpan`, `HierarchyNode[]`, `StructuralPath`, `DerivedArtifactProvenance`) and test whether they represent a small CA sample **faithfully** (different anatomy categories, hierarchy node kinds, non-tree structures, article/part/division peculiarities, intermixed history, multiple breadcrumb conventions).
 **Rule adopted:** *a parser implementation may be corpus-specific; the artifact interfaces must survive both USC and California.*
 **Exit:** a list of type/interface changes CA forces (or confirmation none are needed) — captured **before** M1B freezes interfaces.
 
 ### M0.5C — Disposition extraction
-Consume anatomy's codification/disposition spans (not raw text) → produce **unresolved** `LineageMention`s. Stop at mentions — resolving the target citation needs the alias index (M3), so M0.5C must not build half the resolver.
+Consume anatomy's codification/disposition spans (not raw text) → produce **unresolved** `LineageMention`s (`relationship_type`, `raw_target_reference`, span, `extraction_method`, `extraction_confidence`, `resolution_status = unresolved`). Stop at mentions — resolving the target citation needs the alias index (M3), so M0.5C must not build half the resolver.
 **Exit:** extraction precision/recall on a hand-reviewed sample.
 
 ### M1B — Semantic freeze
-With A, B1, B2, B3, C reported, freeze `CanonicalLegalDocument` and the derived-artifact interfaces. Freeze **lineage types** (`LineageEdge`, `LineageEvidence`, `relationship_type`, `resolution_status`) with **zero rows** permitted.
-**Acceptance:** golden-fixture invariants for the derived layer; `legal_id`/`document_id`/`chunk_id` deterministic; every chunk maps to exactly one parent; character offsets resolve to correct text; missing metadata stays missing.
+With A.1, B1, B2, B3, C reported, freeze `CanonicalLegalDocument` and the derived-artifact interfaces. Freeze **lineage types** (`LineageEdge`, `LineageEvidence`, `relationship_type`, `resolution_status`) with **zero rows** permitted.
+**Acceptance:** golden-fixture invariants for the derived layer; `legal_id`/`source_record_id`/`chunk_id` deterministic; every chunk maps to exactly one parent; character offsets resolve to correct text; missing metadata stays missing.
 
 ### M2 — USC citation detector + parser
 Deterministically turn `42 U.S.C. § 1983` and its variants into structured `ReferenceMention`s. No embeddings.
@@ -421,9 +471,35 @@ Extend detection/parsing/resolution to federal regulations (`17 CFR 240.10b-5`),
 
 ---
 
+## Sequencing
+
+```
+M0.5A.1  segment/collision-provenance spike  ── hard-gates identity contract
+   │
+   ├── (parallel) M1A immutable CanonicalSourceRecord core  ── starts now
+   │
+freeze source-identity contract  (after A.1)
+   │
+SourceIdentityAnnotation + DocumentClassificationAnnotation + QualityAnnotation
+   │
+── (parallel) M0.5B1 anatomy · M0.5B2 hierarchy · M0.5B3 CA probe ──
+   │
+M0.5C  disposition → unresolved LineageMention
+   │
+M1B  freeze semantic derived-artifact interfaces
+   │
+M2 detector/parser → M3 resolver/alias index → M3.5 resolve LineageMention → M4 in-body refs
+   │
+Later: CFR extension · State framework
+```
+
+**Gate semantics (precise):** M0.5A.1 gates the *source-identity contract*, not raw ingestion. The lossless M1A record serializer can start immediately because it need not know how `legal_id` works. B and C need not block M1A; C must not start before B yields a trustworthy codification/disposition span.
+
+---
+
 ## Cross-cutting invariants
 
-- **Anatomy-as-derived holds only under three conditions:** (1) identity depends on nothing anatomy produces; (2) change-detection pins `(snapshot_version, anatomy_parser_version)` as a pair; (3) durable references anchor to source-level keys (semantic and provenance anchors above), never to anatomy-derived artifacts.
+- **Anatomy-as-derived holds only under three conditions:** (1) identity depends on nothing anatomy produces; (2) change-detection pins `(snapshot_version, anatomy_parser_version)` as a pair; (3) durable references anchor to source-level keys (the semantic and provenance anchors above; the durable-FK rule), never to anatomy-derived artifacts or to `source_identity_key`.
 - **Snapshot retention is a correctness dependency.** Retain adjacent Open US Law snapshots used for identity/amendment/lineage (`v2026.07`, `v2026.08` are the first fixtures). Over time, measure across multiple transitions: `P(act_id stable | ordinary amendment, corpus)`, `P(identity changed | renumbering, corpus)`, `P(raw_text changes | operative body unchanged)`. One transition is commissioning evidence, not a permanent guarantee.
 - **`cross_references_usc` is not yet a silver label.** The field-present rate is **not** a recall floor — true citation density is unknown. Before M4, build a small stratified hand-labeled citation set (rows with the field; rows with empty field but citation-shaped text; no-reference rows; long sections; operative-body vs editorial-note references; unusual forms) and independently measure dataset-field precision/recall and parser precision/recall. **"Parser finds a valid citation, field is empty" must never auto-count as a false positive.**
 - **Status is snapshot-qualified.** Emit "in force as represented in Open US Law v2026.08," never "currently in force."
@@ -432,13 +508,13 @@ Extend detection/parsing/resolution to federal regulations (`17 CFR 240.10b-5`),
 
 ## Snapshot-diff (for future releases)
 
-Version comparison at the **document** level (not chunk IDs). Pipeline: `source_id` match → `legal_id` match → raw-text hash → operative-text hash → citation/hierarchy comparison → status-transition analysis → similarity/lineage inference → classify as `unchanged | amended | added | removed | renumbered | transferred | recodified | status_changed | possible_successor | ambiguous`. Only changed/new documents get re-processed. (M0 delivered the `act_id`-stability diff; `snapshot_diff.py` is the seed of this pipeline.)
+Version comparison at the **document** level (not chunk IDs). Pipeline: source-identity match → `legal_id` match → raw-text hash → operative-text hash → citation/hierarchy comparison → status-transition analysis → similarity/lineage inference → classify as `unchanged | amended | added | removed | renumbered | transferred | recodified | status_changed | possible_successor | ambiguous`. Only changed/new documents get re-processed. (M0 delivered the `act_id`-stability diff; `snapshot_diff.py` is the seed of this pipeline.)
 
 ---
 
 ## MVP scope recap
 
-Lossless source store (identity + provenance + quality slot) · derived canonical legal document (anatomy + hierarchy) · USC detection/parsing/normalization/exact resolution · citation alias index · lineage mentions → edges · USC/CFR cross-references where feasible · deterministic hierarchy-aware local resolution · structural subsection parsing with paths + offsets · whole-section default chunking with structural overflow · parser/resolver metrics · USLM validation.
+Lossless immutable source store · versioned identity/classification/quality annotations · derived canonical legal document (anatomy + hierarchy) · USC detection/parsing/normalization/exact resolution · citation alias index · lineage mentions → edges · USC/CFR cross-references where feasible · deterministic hierarchy-aware local resolution · structural subsection parsing with paths + offsets · whole-section default chunking with structural overflow · parser/resolver metrics · USLM validation.
 
 ---
 
@@ -450,11 +526,17 @@ Lossless source store (identity + provenance + quality slot) · derived canonica
 
 ---
 
+## Terminology (defer, don't churn)
+
+Reserve **"canonical"** for the immutable source representation. `CanonicalLegalDocument` (the semantic object) may later be renamed (`ParsedLegalDocument` / `NormalizedLegalDocument` / `LegalDocumentView`). The intent is noted now; **do not rename during M0.5**.
+
+---
+
 ## First action for Claude Code
 
-1. **M0.5A** — identity collision analysis with the report format above (explanation before a key); recommend per-corpus `SourceIdentityStrategy`.
-2. In parallel, **start the M1A lossless serializer** (storage mechanics only; do not freeze the identity contract until A returns).
-3. **M0.5B1** — begin by deciding USLM runtime-vs-eval, then run the USLM-alignment anatomy experiment with the asymmetric metrics.
-4. **M0.5B2 / B3 / C** follow per the DAG (B→C dependency respected).
+1. ~~Run **M0.5A.1**~~ **DONE** — `reports/M0.5A1_segment_provenance.md`. The source-identity contract may now freeze with the *snapshot-observed ordinal* caveat (cross-snapshot stability untestable until a second regulations snapshot; `FR_*` rows are co-numbered distinct captures, so no reading order / no valid concatenation).
+2. **Build the M1A immutable core** (now the active task) with the boundary test in its acceptance suite. It does not depend on A.1.
+3. Do **not** anchor any durable artifact FK to `source_identity_key`.
+4. Then **M0.5B1** (decide USLM runtime-vs-eval first, then the alignment experiment) and **M0.5B2 / B3 / C** per the DAG (B→C dependency respected).
 
-Do not freeze `CanonicalLegalDocument` (M1B) until A, B1, B2, B3, and C have reported. The one hard rule: keep `legal_id`, `document_id`, and `raw_text_hash` orthogonal — `legal_id` derives from proven source identity alone.
+Do not freeze `CanonicalLegalDocument` (M1B) until B1, B2, B3, and C have also reported. The one hard rule: keep `source_record_id`, `raw_text_hash`, and `legal_id` orthogonal — `legal_id` derives from proven source identity alone, and durable FKs anchor to `source_record_id`, never to `source_identity_key`.

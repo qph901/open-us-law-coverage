@@ -11,9 +11,11 @@ citation refers to, with an auditable explanation, **before** any embeddings.
 
 **`PROPOSAL.md` is the source of truth for scope, design, and milestones — read it before making
 design decisions.** Milestone status lives in `README.md`. As of this writing M0 (dataset
-reconnaissance) is complete; the current phase is the **M0.5 commissioning spikes → M1 split**
-(M0.5A identity-collision analysis + M1A lossless source serializer first — see PROPOSAL.md
-"Milestones" and "First action for Claude Code").
+reconnaissance), M0.5A (identity-collision analysis), and M0.5A.1 (collision-provenance +
+segment-order spike) are complete; the source-identity contract may now freeze (with the
+*snapshot-observed ordinal* caveat from M0.5A.1). The **active task is M1A** — the immutable
+`CanonicalSourceRecord` core with the boundary test in its acceptance suite (see PROPOSAL.md
+"Settled architecture", "Milestones", and "First action for Claude Code").
 
 ## Environment & commands
 
@@ -71,6 +73,23 @@ emit Markdown; neither has runtime dependencies on the other:
   Examples use `min(act_id)` (not `any_value`) so the report is byte-stable across reruns. The
   recommended `SourceIdentityStrategy` prose lives in `STRATEGY_SECTION` in the module (embedded, not
   hand-edited into the report) so the report regenerates verbatim.
+- `src/open_us_law_coverage/segment_provenance.py` → `reports/M0.5A1_segment_provenance.md` (M0.5A.1).
+  The collision-provenance + segment-order spike. Also DuckDB-based, and it adds `file_row_number=true`
+  to `read_parquet` to recover a stable within-file **physical row ordinal** without materializing a
+  row-group. Two load-bearing results it established (design against these): (1) the v2026.07↔v2026.08
+  comparison PROPOSAL asked for has an **empty domain** — regulations are new in v2026.08, so
+  cross-snapshot segment/order stability is **untestable** until a second regulations snapshot; (2)
+  `FR_*` distinct-text collisions are **co-numbered distinct documents, not ordered segments**
+  (scattered rows, ≈0% mid-sentence continuation, ≈96% share an agency preamble) — so `segment_ordinal`
+  is *snapshot-observed physical row order* only, never a reading order, and FR full-text concatenation
+  is invalid. Exit-question verdicts live in `EXIT_SECTION` (embedded, qualitative prose so it never
+  drifts from the computed tables). Regenerate with:
+
+  ```bash
+  uv run python -m open_us_law_coverage.segment_provenance data/v2026.08_full/*_regulations.parquet \
+      --snapshot v2026.08 --out reports/M0.5A1_segment_provenance.md \
+      --memory-limit 4GB --temp-dir /path/to/scratch/ddspill
+  ```
 
 ### Load-bearing design invariants (span the whole system — do not violate)
 
