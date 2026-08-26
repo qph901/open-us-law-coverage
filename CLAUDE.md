@@ -117,6 +117,27 @@ emit Markdown; neither has runtime dependencies on the other:
   committed `data/v2026.08/us_ak_constitutions.parquet` when present (skips otherwise). A cheap
   no-`text`-scan snapshot manifest: `uv run python -m open_us_law_coverage.source_record
   data/v2026.08/*.parquet --snapshot v2026.08`.
+- `src/open_us_law_coverage/derived/` (M1A.5) — the shared derived-artifact foundation, on the
+  *interpretation* side of the versioned boundary (so rebuilding any of it has **zero** effect on
+  `source_record_id`/`raw_text_hash`). Not a report harness; its deliverable is the contracts + the
+  golden-fixture suites (`tests/test_derived_provenance.py`, `test_classification.py`,
+  `test_quality_duplicate.py`, `test_assembly_trivial.py`, and the headline `test_durable_fk.py`).
+  `provenance.py` is the **multi-input DAG** — `DerivedArtifactProvenance.build(...)` computes a
+  content-addressed `artifact_id = compute_artifact_id(artifact_type, sorted(inputs), producer_name,
+  producer_version, config_hash)` with `generated_at` **excluded**; edges are `ArtifactInput(input_type,
+  input_id)` and durable references anchor to `source_record_id` (never `source_identity_key`).
+  Producers, each anchoring provenance to `source_record_id`: `classification.classify_source_record`
+  (near-deterministic, keyed on the `act_id` namespace prefix — `FR_*`→federal_register/promulgation,
+  everything else per `_PREFIX_MAP`, unknown abstains; `fr_default_off` is the retrieval-policy hook),
+  `quality.detect_duplicate_rows` (**`duplicate_row` only** — contamination detector deferred;
+  cross-record, flags byte-identical `raw_text_hash` within a caller-chosen scope, never deletes),
+  and `assembly.assemble_trivial_single_record` (`trivial_single_record_v1`: one member, `KEEP`,
+  `complete`, `assembled_text = raw_text` verbatim — **`legal_id` attaches to the assembly, not the
+  row**). Closed vocabularies are `enum.StrEnum` (3.12). `SourceIdentityAnnotation`
+  (`identity.py`) is the shape only — it **groups/characterizes, never composes**; concrete strategies
+  (`usc_act_id_v1`/`cfr_identity_v1`/…) and the CFR multi-row composer (`cfr_source_assembly_v1`) land
+  in the CFR path, not here. Duck-typed on `.source_record_id`/`.column('act_id')`, so `derived/` has
+  **no runtime import** of the immutable core.
 
 ### Load-bearing design invariants (span the whole system — do not violate)
 
