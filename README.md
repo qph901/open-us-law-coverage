@@ -63,7 +63,30 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
   `(snapshot_version, source_file_checksum, physical_row_ordinal)` — never from
   content or citation. The reader stays row-group-bounded, so a full-snapshot
   pass is safe on the 11 GB federal regulations `text` column. Run:
-  `uv run pytest`. **M0.5B+ : not started.**
+  `uv run pytest`.
+- **M1A.5 — shared derived-artifact foundation: scaffolded.** The
+  interpretation-layer contracts in
+  [`src/open_us_law_coverage/derived/`](src/open_us_law_coverage/derived/):
+  `DerivedArtifactProvenance` as a multi-input DAG (content-addressed
+  `artifact_id`, `generated_at` excluded), `SourceIdentityAnnotation` (groups
+  only, never composes), and the first producers — deterministic
+  `DocumentClassificationAnnotation`, `duplicate_row`-only `QualityAnnotation`,
+  and `trivial_single_record_v1` `SourceDocumentAssembly`. The headline
+  **durable-FK test** proves identity/assembly v1↔v2 coexist over the same
+  records and no artifact is keyed by `source_identity_key`. Concrete identity
+  strategies and the CFR multi-row composer land later (CFR path).
+- **M0.5B2 — Hierarchy stress test: complete.** Report at
+  [reports/M0.5B2_hierarchy.md](reports/M0.5B2_hierarchy.md). A single
+  `breadcrumb`-driven parser normalizes CA statutes (variable code/division/part/
+  title ordering), TX statutes (flat, `title_number` 100% null), OH regulations
+  (agency/chapter/rule), and DE regulations (title/group/regulation with
+  *unnumbered container* nodes) into one `HierarchyNode[]` shape — **no interface
+  change forced**. Topology tested, not just coverage: acyclicity and proper-tree
+  assembly are clean, but **bare-identifier LOCAL resolution is unsafe** (12–26%
+  of leaf `(kind,identifier)` keys sit under >1 parent) and **sibling order is
+  only partly recoverable** from physical row order (8–90% by corpus), so
+  RELATIVE resolution must operate on the absolute path and abstain on the rest.
+  **M0.5B1 (needs USLM) / B3 / CFR-A1 (needs eCFR): not started.**
 
 ## Setup
 
@@ -100,6 +123,11 @@ The recon harness accepts any file glob, so it can be pointed at the full
   + segment-order spike (DuckDB `file_row_number`).
 - `src/open_us_law_coverage/source_record.py` — M1A immutable
   `CanonicalSourceRecord` core (lossless serializer + boundary-enforcing model).
+- `src/open_us_law_coverage/derived/` — M1A.5 shared derived-artifact foundation
+  (provenance DAG + identity/classification/quality/assembly contracts and their
+  first producers).
+- `src/open_us_law_coverage/hierarchy.py` — M0.5B2 hierarchy stress test
+  (breadcrumb → normalized `HierarchyNode[]` + topology report).
 - `tests/` — golden-fixture acceptance suite (`uv run pytest`).
 - `scripts/download.py` — gated download + SHA-256 verification.
 - `reports/` — generated reports (committed).

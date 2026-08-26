@@ -14,15 +14,18 @@ design decisions.** Milestone status lives in `README.md`. As of this writing M0
 reconnaissance), M0.5A (identity-collision analysis), M0.5A.1 (collision-provenance +
 segment-order spike), and **M1A (the immutable `CanonicalSourceRecord` core)** are complete;
 the source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1.
-The **active task is M1A.5** (the shared derived-artifact foundation: the `DerivedArtifactProvenance`
-multi-input DAG + `SourceIdentityAnnotation` / `DocumentClassificationAnnotation` /
-`QualityAnnotation`(duplicate-only) / `SourceDocumentAssembly`(`trivial_single_record_v1`) + the
-durable-FK test), then the **CFR assembly layer** (CFR-A1 eCFR-validated commissioning → CFR-A2
-`cfr_source_assembly_v1`) and the **M0.5B** spikes (B1 anatomy / B2 hierarchy / B3 CA probe) in
-parallel, ending at the M1B semantic freeze → M0.5C. Assembly precedes anatomy in the layer order;
-interfaces co-land in M1A.5 but the assembly *producer* runs after identity groups the members (see
-PROPOSAL.md "Settled architecture", "Milestones", "Design decisions", and "First action for Claude
-Code").
+**M1A.5** (the shared derived-artifact foundation) is **scaffolded** — the `DerivedArtifactProvenance`
+multi-input DAG + `SourceIdentityAnnotation`(shape) + `DocumentClassificationAnnotation`(deterministic)
++ `QualityAnnotation`(duplicate-only) + `SourceDocumentAssembly`(`trivial_single_record_v1`) + the
+durable-FK test all live in `src/open_us_law_coverage/derived/`; the concrete `SourceIdentityStrategy`
+producers and the CFR multi-row composer are **not** built yet. **M0.5B2** (hierarchy stress test) is
+**complete** (`reports/M0.5B2_hierarchy.md`). Remaining before the M1B semantic freeze: the concrete
+identity strategies, the **CFR assembly layer** (CFR-A1 eCFR-validated commissioning → CFR-A2
+`cfr_source_assembly_v1` — needs human-staged edition-pinned eCFR), and the other **M0.5B** spikes
+(B1 anatomy — needs edition-pinned USLM; B3 CA abstraction probe), then M1B → M0.5C. Assembly precedes
+anatomy in the layer order; interfaces co-land in M1A.5 but the assembly *producer* runs after identity
+groups the members (see PROPOSAL.md "Settled architecture", "Milestones", "Design decisions", and
+"First action for Claude Code").
 
 ## Environment & commands
 
@@ -138,6 +141,23 @@ emit Markdown; neither has runtime dependencies on the other:
   (`usc_act_id_v1`/`cfr_identity_v1`/…) and the CFR multi-row composer (`cfr_source_assembly_v1`) land
   in the CFR path, not here. Duck-typed on `.source_record_id`/`.column('act_id')`, so `derived/` has
   **no runtime import** of the immutable core.
+- `src/open_us_law_coverage/hierarchy.py` → `reports/M0.5B2_hierarchy.md` + `tests/test_hierarchy.py`
+  (M0.5B2). Both a tested parser and a report harness. `parse_breadcrumb(breadcrumb_json)` is the pure
+  core — it turns the `breadcrumb` JSON array (`{type,num,label,name}`, root→leaf) into a normalized
+  `HierarchyNode(kind, identifier, label, source, confidence, ordinal, raw_kind, name)` path; **flat
+  `title/chapter/section` columns are not read** (M0: unreliable — CA ~70% null title, TX 100%),
+  `breadcrumb`/`display_path` are (100% populated). `kind` normalizes via `HierarchyKind` (StrEnum;
+  unknown→`other` at reduced confidence, raw preserved); an unnumbered container (`num == ""`, the DE
+  `group`s) yields `identifier=None` at half confidence — an **abstention, never a fabricated id**.
+  `analyze_corpus` streams the small columns only (`iter_batches(columns=...)`, never `text`), assembles
+  an absolute-path-keyed tree, and measures **topology, not just coverage**: acyclicity, proper-tree
+  assembly, display-path round-trip (exact vs `label`-is-prefix — `display_path` appends node `name`),
+  bare-`(kind,identifier)` leaf ambiguity (why LOCAL resolution needs the absolute path), and
+  sibling-order consistency (physical row order vs `natural_key` sort — the budget for RELATIVE-ref
+  abstention). Report is byte-stable (deterministic first-seen ordering, sorted output). `EXIT_SECTION`
+  holds the qualitative verdict (embedded so it never drifts from the tables). Regenerate:
+  `uv run python -m open_us_law_coverage.hierarchy data/v2026.08_full/us_{ca,tx}_statutes.parquet
+  data/v2026.08_full/us_{oh,de}_regulations.parquet --snapshot v2026.08 --out reports/M0.5B2_hierarchy.md`.
 
 ### Load-bearing design invariants (span the whole system — do not violate)
 
