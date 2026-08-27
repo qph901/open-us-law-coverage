@@ -10,7 +10,7 @@
 | us_ca_statutes.parquet | 161,566 | 152,547 | 8,882 | 137 | 0 | yes |
 | us_ak_statutes.parquet | 17,935 | 16,998 | 937 | 0 | 0 | yes |
 
-_`removed = 0` across every corpus ⇒ no act_id ever disappeared or was reissued between snapshots; `added` is genuinely new sections; `amended` is byte-level text change (federal is inflated by editorial-note growth — see per-file detail)._
+_`removed = 0` across every corpus ⇒ every `act_id` present in the old snapshot is still present in the new one (none dropped); `added` are `act_id`s new to the new snapshot **by set membership**; `amended` counts byte-level `text` change (federal is inflated by editorial-note growth — see per-file detail). Set membership alone does **not** establish that an id was never reissued to a different provision, nor that an `added` id is a brand-new enactment rather than the target of a renumber._
 
 
 ---
@@ -23,7 +23,7 @@ _`removed = 0` across every corpus ⇒ no act_id ever disappeared or was reissue
 
 ## Verdict
 
-**`act_id` survives text-only amendment.** 26,426 act_ids appear in *both* snapshots with **different text** — the identifier held constant while the provision's text changed. This confirms the proposal's Tier-1 assumption: `act_id` is a safe stable-source identity seed under ordinary amendment.
+**Supporting evidence that `act_id` is stable under text change.** 26,426 act_ids appear in *both* snapshots with **different text** — the identifier held constant while the stored `text` changed. This is *consistent with* the proposal's Tier-1 assumption that `act_id` is a stable-source identity seed, but it does **not** by itself confirm it: same-id/different-text cannot, on its own, distinguish a genuine legal amendment from editorial-notes expansion (see the caveat below — a large share is exactly that) or from an `act_id` being reused for a different provision. Treat it as one supporting signal, corroborated by the operative-body split below, not as proof.
 
 ## Classification of act_ids
 
@@ -41,18 +41,18 @@ The 26,426 'amended' rows are **not** all real legal amendments. Of them, **26,4
 > **Design implication (M1):** the `text` field bundles operative statutory text with a volatile editorial-notes apparatus. Hashing the whole field makes ~half the corpus look 'amended' between snapshots and would poison both change-detection and text-similarity lineage. **Hash (and diff) the operative body separately from the notes.** `text_hash` over raw `text` is a provenance/integrity hash, not a legal-change signal.
 
 **Stable-but-amended act_id examples (identity held, text changed):**
-- `USC_T36_C305_S30511`
-- `USC_T12_C35_S3406`
-- `USC_T45_C17_S821`
-- `USC_T42_C7_S1395lll`
-- `USC_T38_C20_S2052`
-- `USC_T2_C65_S6631`
-- `USC_T7_C35A_S1444`
-- `USC_T42_C35_S3015`
+- `USC_T10_C1001_S10001`
+- `USC_T10_C1003_S10101`
+- `USC_T10_C1003_S10105`
+- `USC_T10_C1005_S10145`
+- `USC_T10_C1005_S10147`
+- `USC_T10_C1005_S10148`
+- `USC_T10_C1005_S10149`
+- `USC_T10_C1005_S10154`
 
 ## Move rows (renumber / transfer / recodify) in the new snapshot
 
-Of 1,815 disposition-status rows checked, 393 state a successor number inline in the text, and 1,815 have an act_id that already existed in `v2026.07`. A move keeps *its own* (old) number as the row's act_id while pointing at the successor — so the successor provision carries a **different** act_id, exactly why cross-move identity cannot ride on act_id and must be linked via `lineage_id`.
+Of 1,815 disposition-status rows checked, 393 state a successor number inline in the text, and 1,815 have an act_id that already existed in `v2026.07`. The move row keeps *its own* (old) number as the row's act_id while its text points at a successor number. **The stated successor is extracted from the text but not resolved to an actual old/new record here**, so this pass does not by itself prove the successor carries a different act_id — it establishes only that the move row retains its own identifier. That retention is already enough motivation to link cross-move identity via `lineage_id` rather than assume act_id follows the provision; resolving the successor pointer to a record is future lineage work.
 
 | act_id | status | self in old? | successor stated |
 |---|---|:--:|---|
@@ -77,7 +77,7 @@ Of 1,815 disposition-status rows checked, 393 state a successor number inline in
 
 ## Verdict
 
-**`act_id` survives text-only amendment.** 8,882 act_ids appear in *both* snapshots with **different text** — the identifier held constant while the provision's text changed. This confirms the proposal's Tier-1 assumption: `act_id` is a safe stable-source identity seed under ordinary amendment.
+**Supporting evidence that `act_id` is stable under text change.** 8,882 act_ids appear in *both* snapshots with **different text** — the identifier held constant while the stored `text` changed. This is *consistent with* the proposal's Tier-1 assumption that `act_id` is a stable-source identity seed, but it does **not** by itself confirm it: same-id/different-text cannot, on its own, distinguish a genuine legal amendment from editorial-notes expansion (see the caveat below — a large share is exactly that) or from an `act_id` being reused for a different provision. Treat it as one supporting signal, corroborated by the operative-body split below, not as proof.
 
 ## Classification of act_ids
 
@@ -95,14 +95,14 @@ The 8,882 'amended' rows are **not** all real legal amendments. Of them, **8,819
 > **Design implication (M1):** the `text` field bundles operative statutory text with a volatile editorial-notes apparatus. Hashing the whole field makes ~half the corpus look 'amended' between snapshots and would poison both change-detection and text-similarity lineage. **Hash (and diff) the operative body separately from the notes.** `text_hash` over raw `text` is a provenance/integrity hash, not a legal-change signal.
 
 **Stable-but-amended act_id examples (identity held, text changed):**
-- `STATE_CA_Cbpc_D9_C15_S25503.57`
-- `STATE_CA_Cedc_T3_D10_P59_C8_A11_S94911`
-- `STATE_CA_Cwic_D2_P1_C2_A16_S656.2`
-- `STATE_CA_Cwic_D9_P3_C7_A7_S14199.71`
-- `STATE_CA_Cbpc_D7_P3_C1_A1.4_S17511.5`
-- `STATE_CA_Clab_D2_P1_C1_A1_S230.8`
-- `STATE_CA_Clab_D1_C4_S96.8`
-- `STATE_CA_Chsc_D31_P2_C2.8_S50490.4`
+- `STATE_CA_Cbpc_AGENERAL PROVISIONS_S27`
+- `STATE_CA_Cbpc_AGENERAL PROVISIONS_S27.5`
+- `STATE_CA_Cbpc_AGENERAL PROVISIONS_S30`
+- `STATE_CA_Cbpc_D1.5_C2_S480`
+- `STATE_CA_Cbpc_D1.5_C2_S480.2`
+- `STATE_CA_Cbpc_D1.5_C3_S494`
+- `STATE_CA_Cbpc_D1.5_C3_S494.5`
+- `STATE_CA_Cbpc_D10_C10_S26100`
 
 **Added-in-v2026.08 examples:**
 - `STATE_CA_Cedc_T1_D1_P10.5_C3_A7_S17376`
@@ -116,7 +116,7 @@ The 8,882 'amended' rows are **not** all real legal amendments. Of them, **8,819
 
 ## Move rows (renumber / transfer / recodify) in the new snapshot
 
-Of 0 disposition-status rows checked, 0 state a successor number inline in the text, and 0 have an act_id that already existed in `v2026.07`. A move keeps *its own* (old) number as the row's act_id while pointing at the successor — so the successor provision carries a **different** act_id, exactly why cross-move identity cannot ride on act_id and must be linked via `lineage_id`.
+Of 0 disposition-status rows checked, 0 state a successor number inline in the text, and 0 have an act_id that already existed in `v2026.07`. The move row keeps *its own* (old) number as the row's act_id while its text points at a successor number. **The stated successor is extracted from the text but not resolved to an actual old/new record here**, so this pass does not by itself prove the successor carries a different act_id — it establishes only that the move row retains its own identifier. That retention is already enough motivation to link cross-move identity via `lineage_id` rather than assume act_id follows the provision; resolving the successor pointer to a record is future lineage work.
 
 
 
@@ -130,7 +130,7 @@ Of 0 disposition-status rows checked, 0 state a successor number inline in the t
 
 ## Verdict
 
-**`act_id` survives text-only amendment.** 937 act_ids appear in *both* snapshots with **different text** — the identifier held constant while the provision's text changed. This confirms the proposal's Tier-1 assumption: `act_id` is a safe stable-source identity seed under ordinary amendment.
+**Supporting evidence that `act_id` is stable under text change.** 937 act_ids appear in *both* snapshots with **different text** — the identifier held constant while the stored `text` changed. This is *consistent with* the proposal's Tier-1 assumption that `act_id` is a stable-source identity seed, but it does **not** by itself confirm it: same-id/different-text cannot, on its own, distinguish a genuine legal amendment from editorial-notes expansion (see the caveat below — a large share is exactly that) or from an `act_id` being reused for a different provision. Treat it as one supporting signal, corroborated by the operative-body split below, not as proof.
 
 ## Classification of act_ids
 
@@ -148,18 +148,18 @@ The 937 'amended' rows are **not** all real legal amendments. Of them, **933 gre
 > **Design implication (M1):** the `text` field bundles operative statutory text with a volatile editorial-notes apparatus. Hashing the whole field makes ~half the corpus look 'amended' between snapshots and would poison both change-detection and text-similarity lineage. **Hash (and diff) the operative body separately from the notes.** `text_hash` over raw `text` is a provenance/integrity hash, not a legal-change signal.
 
 **Stable-but-amended act_id examples (identity held, text changed):**
-- `STATE_AK_T21_C21.22_S21.22.200`
-- `STATE_AK_T45_C45.48_S45.48.130`
-- `STATE_AK_T13_C13.60_S13.60.170`
-- `STATE_AK_T18_C18.57_S18.57.050`
-- `STATE_AK_T46_C46.03_S46.03.500`
-- `STATE_AK_T23_C23.20_S23.20.350`
-- `STATE_AK_T28_C28.35_S28.35.031`
+- `STATE_AK_T10_C10.06_S10.06.210`
+- `STATE_AK_T10_C10.06_S10.06.411`
+- `STATE_AK_T10_C10.06_S10.06.420`
+- `STATE_AK_T10_C10.06_S10.06.433`
+- `STATE_AK_T10_C10.06_S10.06.435`
 - `STATE_AK_T10_C10.06_S10.06.490`
+- `STATE_AK_T10_C10.06_S10.06.576`
+- `STATE_AK_T10_C10.06_S10.06.578`
 
 ## Move rows (renumber / transfer / recodify) in the new snapshot
 
-Of 0 disposition-status rows checked, 0 state a successor number inline in the text, and 0 have an act_id that already existed in `v2026.07`. A move keeps *its own* (old) number as the row's act_id while pointing at the successor — so the successor provision carries a **different** act_id, exactly why cross-move identity cannot ride on act_id and must be linked via `lineage_id`.
+Of 0 disposition-status rows checked, 0 state a successor number inline in the text, and 0 have an act_id that already existed in `v2026.07`. The move row keeps *its own* (old) number as the row's act_id while its text points at a successor number. **The stated successor is extracted from the text but not resolved to an actual old/new record here**, so this pass does not by itself prove the successor carries a different act_id — it establishes only that the move row retains its own identifier. That retention is already enough motivation to link cross-move identity via `lineage_id` rather than assume act_id follows the provision; resolving the successor pointer to a record is future lineage work.
 
 
 

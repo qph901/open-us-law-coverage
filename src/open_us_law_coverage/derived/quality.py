@@ -8,6 +8,24 @@ detector (``clean`` / ``suspicious`` / ``rejected`` — the GA/NC-boilerplate ca
 is deferred until a corpus at risk is ingested. Suspicious rows are **never
 deleted** — duplicates stay in the immutable core; this annotation only records
 the relationship.
+
+**Scope is one candidate identity group, never a whole file** (M1A.5 review B1).
+``duplicate_row`` means "same bytes *within the candidate identity group*," never
+"same legal identity" — CA proves identical bytes routinely span *distinct*
+provisions (``[Reserved]``, ``[Repealed]``, reusable boilerplate; see
+``reports/M0.5B3_ca_abstraction.md``), so a corpus/file scope would fabricate
+duplicate edges across unrelated law.
+
+The provenance is designed so a conclusion is fully reproducible from its declared
+inputs. A detector run over a group is a first-class **scope artifact**
+(:class:`DuplicateScope`), content-addressed by the *complete* member set. Each
+per-record :class:`QualityAnnotation` names two inputs — the scope artifact and
+its own target record — so:
+
+* changing the sibling set changes the scope id and therefore every conclusion's
+  ``artifact_id`` (the recompute frontier is complete), and
+* two records in one scope never collide (the target ``source_record`` edge
+  differs), so one ``artifact_id`` can never name two different conclusions.
 """
 
 from __future__ import annotations
@@ -18,9 +36,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Iterable
 
 from .provenance import (
+    ArtifactInput,
     ArtifactType,
     DerivedArtifactProvenance,
     Evidence,
+    InputType,
     source_record_inputs,
 )
 
@@ -44,40 +64,113 @@ class QualityFlag(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class QualityAnnotation:
+class DuplicateScope:
+    """A duplicate-detector run over exactly one candidate identity group.
+
+    Content-addressed by the **complete member set** (its provenance edges are the
+    sorted ``source_record`` ids of every member), so the scope id is stable under
+    reordering but changes the instant a member is added or removed. Per-record
+    :class:`QualityAnnotation`\\ s name this scope as an input, which is what gives
+    every conclusion a complete recompute frontier.
+    """
+
     provenance: DerivedArtifactProvenance
+    member_source_record_ids: tuple[str, ...]
+    evidence: tuple[Evidence, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class QualityAnnotation:
+    """One record's quality conclusion within a :class:`DuplicateScope`.
+
+    ``target_source_record_id`` is the row this conclusion is about; the same id is
+    also a ``source_record`` provenance edge, alongside the scope-artifact edge.
+    ``quality_status`` stays ``unknown`` (this producer certifies no overall
+    cleanliness); the **flag** is the load-bearing signal downstream consumers read.
+    """
+
+    provenance: DerivedArtifactProvenance
+    target_source_record_id: str
     quality_status: QualityStatus
     quality_flags: tuple[QualityFlag, ...] = field(default_factory=tuple)
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateDetectionResult:
+    """The full output of one detector run: the scope artifact plus one
+    annotation per member, in input order."""
+
+    scope: DuplicateScope
+    annotations: tuple[QualityAnnotation, ...]
+
+
+def is_duplicate_row(annotation: QualityAnnotation) -> bool:
+    """The intended consumer read: duplicate-ness lives in ``quality_flags``, never
+    in ``quality_status`` (assembly / dedup call this, per M1A.5 review B1)."""
+    return QualityFlag.DUPLICATE_ROW in annotation.quality_flags
 
 
 def detect_duplicate_rows(
     records: Iterable["CanonicalSourceRecord"],
     *,
     producer_version: str = PRODUCER_VERSION,
-) -> list[QualityAnnotation]:
-    """Flag byte-identical rows within the given scope.
+) -> DuplicateDetectionResult:
+    """Flag byte-identical rows **within one candidate identity group**.
 
-    The caller decides scope (typically one identity group or one file). Rows
-    whose ``raw_text_hash`` collides with at least one other row in the batch get
-    a ``duplicate_row`` flag; every other row gets a clean, flagless annotation
-    (``quality_status = unknown`` — this producer does not certify ``clean``).
-    Null-text rows are never duplicates of each other (there is no content to
+    ``records`` must be exactly the members of a single resolved-or-candidate
+    identity group — there is deliberately no file/corpus scope (M1A.5 review B1),
+    because identical bytes routinely span distinct provisions and a wider scope
+    would invent duplicate relationships across unrelated law.
+
+    Returns a :class:`DuplicateDetectionResult`: a :class:`DuplicateScope` keyed by
+    the complete member set and one :class:`QualityAnnotation` per member (input
+    order preserved). A row whose ``raw_text_hash`` collides with at least one
+    other member gets a ``duplicate_row`` flag; every other member gets a flagless
+    ``unknown`` annotation. Null-text rows are never duplicates (no content to
     address), matching ``raw_text_hash is None``.
-
-    Order of the returned annotations follows the input order.
     """
     materialized = list(records)
+    # Canonical (sorted) member set: the scope is content-addressed by this set, so
+    # its stored membership must be order-independent too — reversing the input rows
+    # must yield a byte-identical DuplicateScope, not just an id-equal one (M1A.5
+    # review P1). Per-member annotation order is preserved separately, below.
+    canonical_member_ids = tuple(sorted(rec.source_record_id for rec in materialized))
+
+    scope_prov = DerivedArtifactProvenance.build(
+        ArtifactType.DUPLICATE_SCOPE,
+        source_record_inputs(canonical_member_ids),  # the COMPLETE member set
+        PRODUCER_NAME,
+        producer_version,
+    )
+    scope = DuplicateScope(
+        provenance=scope_prov,
+        member_source_record_ids=canonical_member_ids,
+        evidence=(
+            Evidence(
+                "identity_group_scope",
+                f"duplicate detection scoped to one identity group of "
+                f"{len(canonical_member_ids)} member(s)",
+                confidence=1.0,
+            ),
+        ),
+    )
+
     by_hash: dict[str, list[str]] = defaultdict(list)
     for rec in materialized:
         if rec.raw_text_hash is not None:
             by_hash[rec.raw_text_hash].append(rec.source_record_id)
 
-    out: list[QualityAnnotation] = []
+    annotations: list[QualityAnnotation] = []
     for rec in materialized:
+        # Two edges: the scope artifact (so a membership change re-hashes this
+        # conclusion) and this record (so two members never share an id).
         provenance = DerivedArtifactProvenance.build(
             ArtifactType.QUALITY_ANNOTATION,
-            source_record_inputs([rec.source_record_id]),
+            (
+                ArtifactInput(InputType.ANNOTATION, scope.provenance.artifact_id),
+                ArtifactInput(InputType.SOURCE_RECORD, rec.source_record_id),
+            ),
             PRODUCER_NAME,
             producer_version,
         )
@@ -90,7 +183,7 @@ def detect_duplicate_rows(
             (
                 Evidence(
                     "byte_identical_text",
-                    f"raw_text_hash shared by {len(siblings)} rows in scope: "
+                    f"raw_text_hash shared by {len(siblings)} rows in identity group: "
                     + ", ".join(sorted(siblings)),
                     confidence=1.0,
                 ),
@@ -98,12 +191,14 @@ def detect_duplicate_rows(
             if is_dup
             else ()
         )
-        out.append(
+        annotations.append(
             QualityAnnotation(
                 provenance=provenance,
+                target_source_record_id=rec.source_record_id,
                 quality_status=QualityStatus.UNKNOWN,
                 quality_flags=flags,
                 evidence=evidence,
             )
         )
-    return out
+
+    return DuplicateDetectionResult(scope=scope, annotations=tuple(annotations))

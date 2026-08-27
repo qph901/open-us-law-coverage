@@ -91,6 +91,14 @@ EXPECTED_COLUMNS: tuple[str, ...] = (
 # ``text`` body, which is held once as ``raw_text``).
 METADATA_COLUMNS: tuple[str, ...] = tuple(c for c in EXPECTED_COLUMNS if c != TEXT_COLUMN)
 
+# The four integer columns (M0: identical across all 229 files); every other
+# column is a UTF-8 string. Arrow field types are validated against this before a
+# read, so a file that silently changed a column's type is rejected rather than
+# read into a malformed record.
+_INT_COLUMNS: frozenset[str] = frozenset(
+    {"word_count", "last_amended_year", "subsection_count", "year"}
+)
+
 _FILE_HASH_CHUNK = 1 << 20  # 1 MiB — hash the file without loading it whole.
 
 
@@ -168,6 +176,74 @@ class CanonicalSourceRecord:
     raw_text: str | None
     raw_text_hash: str | None
 
+    def __post_init__(self) -> None:
+        """Enforce the advertised invariants at *construction*, not only in the
+        reader (M1A.5 review P2). Direct construction can no longer retain a
+        caller-owned mutable mapping or carry an id/hash inconsistent with the rest
+        of the record.
+        """
+        # Defensive read-only wrap: copy first, so a caller mutating the dict they
+        # passed cannot leak into this immutable record.
+        object.__setattr__(
+            self, "original_columns", MappingProxyType(dict(self.original_columns))
+        )
+        # Same source shape as the reader (M1A.5 review P2): exactly the 23 metadata
+        # columns, each a nullable scalar of the right kind — never a nested value.
+        got_keys = set(self.original_columns)
+        if got_keys != set(METADATA_COLUMNS):
+            missing = sorted(set(METADATA_COLUMNS) - got_keys)
+            extra = sorted(got_keys - set(METADATA_COLUMNS))
+            raise ValueError(
+                f"original_columns must be exactly METADATA_COLUMNS "
+                f"(missing={missing}, extra={extra})"
+            )
+        for name in METADATA_COLUMNS:
+            value = self.original_columns[name]
+            if value is None:
+                continue
+            if name in _INT_COLUMNS:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise TypeError(
+                        f"metadata column {name!r} must be int or None, got "
+                        f"{type(value).__name__}"
+                    )
+            elif not isinstance(value, str):
+                raise TypeError(
+                    f"metadata column {name!r} must be str or None, got "
+                    f"{type(value).__name__}"
+                )
+        if not isinstance(self.physical_row_ordinal, int) or isinstance(
+            self.physical_row_ordinal, bool
+        ) or self.physical_row_ordinal < 0:
+            raise ValueError(
+                f"physical_row_ordinal must be a non-negative int, got "
+                f"{self.physical_row_ordinal!r}"
+            )
+        for name in ("snapshot_version", "source_file", "source_file_checksum"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty str, got {value!r}")
+        if self.raw_text is not None and not isinstance(self.raw_text, str):
+            raise TypeError(f"raw_text must be str or None, got {type(self.raw_text)}")
+        # Identity + content hash derive from physical coordinates / raw bytes only:
+        # recompute them and reject any inconsistent value a caller supplied.
+        expected_id = compute_source_record_id(
+            self.snapshot_version, self.source_file_checksum, self.physical_row_ordinal
+        )
+        if self.source_record_id and self.source_record_id != expected_id:
+            raise ValueError(
+                f"source_record_id {self.source_record_id!r} is inconsistent with "
+                f"physical coordinates (recomputed {expected_id!r})"
+            )
+        object.__setattr__(self, "source_record_id", expected_id)
+        expected_hash = compute_raw_text_hash(self.raw_text)
+        if self.raw_text_hash is not None and self.raw_text_hash != expected_hash:
+            raise ValueError(
+                f"raw_text_hash {self.raw_text_hash!r} is inconsistent with raw_text "
+                f"(recomputed {expected_hash!r})"
+            )
+        object.__setattr__(self, "raw_text_hash", expected_hash)
+
     def column(self, name: str) -> Any:
         """Verbatim value of one preserved source column."""
         return self.original_columns[name]
@@ -200,12 +276,39 @@ def _validate_schema(names: Sequence[str], source_file: str) -> None:
             detail.append(f"missing={sorted(missing)}")
         if extra:
             detail.append(f"extra={sorted(extra)}")
-        if not detail:  # same set, wrong order — order is load-bearing for nothing,
-            detail.append("column order differs from the canonical schema")  # but flag it
+        # Decision (M1A.5 review P2): exact column order **is** part of the
+        # validated contract. The snapshot is byte-uniform across all 229 files, so
+        # a reordered schema signals an unexpected/foreign file, not a benign
+        # variant — reject it rather than silently accept a different physical layout.
+        if not detail:
+            detail.append("column order differs from the canonical schema")
         raise SchemaMismatchError(
             f"{source_file}: not the uniform 24-column Open US Law schema "
             f"({'; '.join(detail)})"
         )
+
+
+def _validate_arrow_types(schema_arrow: Any, source_file: str) -> None:
+    """Reject a file whose Arrow field types drift from the uniform schema.
+
+    Names/order are checked by :func:`_validate_schema`; this guards the *types*
+    (M1A.5 review P2) so a column that silently became, say, a float or a struct is
+    caught before it is read into a record. Integer columns must be integer;
+    everything else must be a (possibly large) UTF-8 string.
+    """
+    import pyarrow.types as pat
+
+    for f in schema_arrow:
+        if f.name in _INT_COLUMNS:
+            if not pat.is_integer(f.type):
+                raise SchemaMismatchError(
+                    f"{source_file}: column {f.name!r} must be an integer type, "
+                    f"got {f.type}"
+                )
+        elif not (pat.is_string(f.type) or pat.is_large_string(f.type)):
+            raise SchemaMismatchError(
+                f"{source_file}: column {f.name!r} must be a string type, got {f.type}"
+            )
 
 
 def iter_source_records(
@@ -238,6 +341,7 @@ def iter_source_records(
 
     pf = pq.ParquetFile(path)
     _validate_schema([f.name for f in pf.schema_arrow], source_file)
+    _validate_arrow_types(pf.schema_arrow, source_file)
 
     ordinal = 0
     for rg in range(pf.num_row_groups):

@@ -9,7 +9,9 @@ From ``PROPOSAL.md`` ("Data contracts", "The durable-foreign-key rule"):
 
 This is the invariant that keeps a *mistaken identity strategy from corrupting
 provenance*: durable references anchor to ``source_record_id``, never to the
-mutable ``source_identity_key``.
+mutable ``source_identity_key``. The key/``legal_id`` live on a separate versioned
+:class:`AssemblyIdentityAssociation` (review B3), not on the content-addressed
+assembly.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from open_us_law_coverage.derived import (
     IdentityStatus,
     InputType,
     SourceIdentityAnnotation,
+    associate_assembly_with_identity,
     source_record_inputs,
 )
 from open_us_law_coverage.derived.assembly import assemble_trivial_single_record
@@ -60,9 +63,10 @@ def test_identity_v1_v2_coexist_over_same_records(fixture_parquet: Path):
     # Two strategies, two keys, one member set — both are valid at once.
     assert v1.source_identity_key != v2.source_identity_key
     assert v1.provenance.artifact_id != v2.provenance.artifact_id
-    # Both still point at exactly the same physical rows.
-    assert v1.provenance.source_record_ids() == tuple(members)
-    assert v2.provenance.source_record_ids() == tuple(members)
+    # Both still point at exactly the same physical rows (stored order is
+    # canonical, so compare as sets).
+    assert set(v1.provenance.source_record_ids()) == set(members)
+    assert set(v2.provenance.source_record_ids()) == set(members)
 
 
 def test_no_provenance_edge_references_the_identity_key(fixture_parquet: Path):
@@ -70,31 +74,39 @@ def test_no_provenance_edge_references_the_identity_key(fixture_parquet: Path):
     members = [r.source_record_id for r in records[:3]]
     ident = _identity(members, strategy="cfr_identity_v1", key="KEY_A", producer_version="1")
 
-    # A downstream artifact over the group must anchor to source_record_ids,
-    # never to the (mutable) source_identity_key.
-    downstream = assemble_trivial_single_record(records[0], source_identity_key=ident.source_identity_key)
+    # A downstream assembly over the group anchors to source_record_ids, never to
+    # the (mutable) source_identity_key.
+    downstream = assemble_trivial_single_record(records[0])
     edge_ids = {e.input_id for e in downstream.provenance.inputs}
     assert ident.source_identity_key not in edge_ids
     assert all(e.input_type == InputType.SOURCE_RECORD for e in downstream.provenance.inputs)
 
 
-def test_downstream_artifact_id_is_invariant_to_the_identity_key(fixture_parquet: Path):
-    """The sharp edge of the rule: recomputing an assembly under a *different*
-    identity key (a strategy improvement) must not change its ``artifact_id`` —
-    the id is keyed by the physical members, not by the key."""
+def test_assembly_id_is_invariant_to_the_identity_key(fixture_parquet: Path):
+    """The sharp edge of the rule (review B3): the same assembly body has one
+    ``artifact_id`` regardless of which identity key associates with it — because
+    the key is no longer a field on the content-addressed assembly. Key A and key B
+    associate with the *same* assembly id."""
     records = read_source_records(fixture_parquet, SNAPSHOT)
     rec = records[0]
-    under_key_a = assemble_trivial_single_record(rec, source_identity_key="KEY_A")
-    under_key_b = assemble_trivial_single_record(rec, source_identity_key="KEY_B")
-    assert under_key_a.source_identity_key != under_key_b.source_identity_key
-    assert under_key_a.provenance.artifact_id == under_key_b.provenance.artifact_id
+    asm = assemble_trivial_single_record(rec)
+
+    assoc_a = associate_assembly_with_identity(
+        "KEY_A", asm, strategy_name="cfr_identity_v1", strategy_version="1"
+    )
+    assoc_b = associate_assembly_with_identity(
+        "KEY_B", asm, strategy_name="cfr_identity_v2", strategy_version="2"
+    )
+    assert assoc_a.source_identity_key != assoc_b.source_identity_key
+    # One immutable assembly body -> one artifact id under both keys.
+    assert assoc_a.assembly_artifact_id == assoc_b.assembly_artifact_id
 
 
 def test_assembly_v1_v2_coexist_over_same_members(fixture_parquet: Path):
     records = read_source_records(fixture_parquet, SNAPSHOT)
     rec = records[0]
-    v1 = assemble_trivial_single_record(rec, "KEY", producer_version="1")
-    v2 = assemble_trivial_single_record(rec, "KEY", producer_version="2")
+    v1 = assemble_trivial_single_record(rec, producer_version="1")
+    v2 = assemble_trivial_single_record(rec, producer_version="2")
     # Different producer versions -> distinct artifacts, same physical anchor.
     assert v1.provenance.artifact_id != v2.provenance.artifact_id
     assert v1.provenance.source_record_ids() == v2.provenance.source_record_ids()

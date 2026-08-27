@@ -126,7 +126,7 @@ def analyze_ca(path: str | Path) -> CaProbeResult:
 
     # SourceDocumentAssembly losslessness — full run on a deterministic handful.
     for rec in _first_n(iter_source_records(path, snapshot_version="probe"), 200):
-        asm = assemble_trivial_single_record(rec, source_identity_key=rec.column("act_id"))
+        asm = assemble_trivial_single_record(rec)
         if asm.assembled_text != rec.raw_text:
             res.assembly_lossless = False
             break
@@ -167,7 +167,7 @@ corpus is represented without distortion by the universal types:
 | `DocumentClassificationAnnotation` | `STATE_*` → `statute` / `operative_primary_law` | **no change** |
 | `HierarchyNode[]` | `code/division/part/title/article/chapter/section/appendix`; variable ordering; non-numeric ids (`73c`, `GENERAL PROVISIONS`) | **no change** (`identifier` is already a nullable string) |
 | `StructuralPath` | bare leaf id is ambiguous, but the absolute path is 1:1 (distinct paths == rows) | **no change** — this is exactly why the anchor is the path, not the id |
-| `SourceDocumentAssembly` | CA is 1:1 source→document → `trivial_single_record_v1` | **no change** |
+| `SourceDocumentAssembly` | CA is 1:1 source→document → `trivial_single_record_v2` | **no change** |
 
 **Two requirements captured (producer / taxonomy notes, not type changes):**
 

@@ -19,26 +19,33 @@ M1A.5 producers:
 * :mod:`.classification` — ``DocumentClassificationAnnotation`` + the
   near-deterministic first producer.
 * :mod:`.quality` — ``QualityAnnotation`` + the ``duplicate_row``-only first
-  producer (contamination detector deferred).
-* :mod:`.assembly` — ``SourceDocumentAssembly`` + the ``trivial_single_record_v1``
-  producer (the 99% one-row case). ``legal_id`` attaches to the assembly.
+  producer, scoped to one identity group (contamination detector deferred). Each
+  conclusion names a content-addressed ``DuplicateScope`` so its recompute frontier
+  is complete.
+* :mod:`.assembly` — ``SourceDocumentAssembly`` + the ``trivial_single_record_v2``
+  producer (the 99% one-row case; v1 deprecated/invalid). The assembly is content-addressed by its
+  physical members; the mutable identity key / ``legal_id`` live on a separate
+  versioned ``AssemblyIdentityAssociation``.
 """
 
 from __future__ import annotations
 
 from .assembly import (
+    AssemblyIdentityAssociation,
     AssemblyStatus,
     AssemblyStrategy,
     MemberRole,
     Operation,
     SourceDocumentAssembly,
     assemble_trivial_single_record,
+    associate_assembly_with_identity,
     compute_assembled_text_hash,
 )
 from .classification import (
     AuthorityRole,
     DocumentClass,
     DocumentClassificationAnnotation,
+    classify,
     classify_source_record,
 )
 from .identity import (
@@ -54,14 +61,18 @@ from .provenance import (
     DerivedArtifactProvenance,
     Evidence,
     InputType,
+    canonicalize_inputs,
     compute_artifact_id,
     source_record_inputs,
 )
 from .quality import (
+    DuplicateDetectionResult,
+    DuplicateScope,
     QualityAnnotation,
     QualityFlag,
     QualityStatus,
     detect_duplicate_rows,
+    is_duplicate_row,
 )
 
 __all__ = [
@@ -71,6 +82,7 @@ __all__ = [
     "DerivedArtifactProvenance",
     "Evidence",
     "InputType",
+    "canonicalize_inputs",
     "compute_artifact_id",
     "source_record_inputs",
     # identity
@@ -83,18 +95,24 @@ __all__ = [
     "AuthorityRole",
     "DocumentClass",
     "DocumentClassificationAnnotation",
+    "classify",
     "classify_source_record",
     # quality
+    "DuplicateDetectionResult",
+    "DuplicateScope",
     "QualityAnnotation",
     "QualityFlag",
     "QualityStatus",
     "detect_duplicate_rows",
+    "is_duplicate_row",
     # assembly
+    "AssemblyIdentityAssociation",
     "AssemblyStatus",
     "AssemblyStrategy",
     "MemberRole",
     "Operation",
     "SourceDocumentAssembly",
     "assemble_trivial_single_record",
+    "associate_assembly_with_identity",
     "compute_assembled_text_hash",
 ]

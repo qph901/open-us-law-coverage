@@ -35,6 +35,30 @@ def test_artifact_id_is_order_independent():
     assert a == b
 
 
+def test_equal_id_implies_equal_serialized_inputs():
+    """Review P1: stored inputs are canonicalized, so equal ``artifact_id`` implies a
+    byte-identical object — reversing the inputs yields the *same* serialized tuple,
+    not just the same id."""
+    fwd = DerivedArtifactProvenance.build(
+        ArtifactType.SOURCE_DOCUMENT_ASSEMBLY, _edges("r1", "r2", "r3"), "p", "1"
+    )
+    rev = DerivedArtifactProvenance.build(
+        ArtifactType.SOURCE_DOCUMENT_ASSEMBLY, _edges("r3", "r2", "r1"), "p", "1"
+    )
+    assert fwd.artifact_id == rev.artifact_id
+    assert fwd.inputs == rev.inputs            # canonical stored order
+    assert fwd == rev                          # fully equal serialized objects
+    # and the canonical order is deterministic (sorted by the hashing key).
+    assert list(fwd.inputs) == sorted(fwd.inputs, key=lambda e: (str(e.input_type), e.input_id))
+
+
+def test_directly_constructed_provenance_is_canonicalized():
+    prov = DerivedArtifactProvenance.build(
+        ArtifactType.SOURCE_DOCUMENT_ASSEMBLY, _edges("z", "a", "m"), "p", "1"
+    )
+    assert [e.input_id for e in prov.inputs] == ["a", "m", "z"]
+
+
 def test_generated_at_excluded_from_id():
     p1 = DerivedArtifactProvenance.build(
         ArtifactType.QUALITY_ANNOTATION, _edges("r1"), "p", "1", generated_at="2026-08-25T00:00:00Z"
@@ -100,3 +124,56 @@ def test_provenance_is_frozen():
     prov = DerivedArtifactProvenance.build(ArtifactType.QUALITY_ANNOTATION, _edges("r1"), "p", "1")
     with pytest.raises(dataclasses.FrozenInstanceError):
         prov.producer_version = "2"  # type: ignore[misc]
+
+
+# --- review P6: model invariants on directly-constructed provenance -------
+
+
+def test_directly_constructed_inconsistent_id_is_rejected():
+    """A directly-built provenance whose stored id does not content-address its
+    inputs is a corrupt DAG node."""
+    with pytest.raises(ValueError, match="inconsistent"):
+        DerivedArtifactProvenance(
+            artifact_id="art:sha256:deadbeef",  # not a real hash of the inputs
+            artifact_type=ArtifactType.QUALITY_ANNOTATION,
+            inputs=_edges("r1"),
+            producer_name="p",
+            producer_version="1",
+        )
+
+
+def test_duplicate_edges_are_rejected():
+    with pytest.raises(ValueError, match="duplicate"):
+        DerivedArtifactProvenance.build(
+            ArtifactType.QUALITY_ANNOTATION,
+            (ArtifactInput(InputType.SOURCE_RECORD, "r1"),
+             ArtifactInput(InputType.SOURCE_RECORD, "r1")),
+            "p",
+            "1",
+        )
+
+
+def test_empty_producer_identifiers_rejected():
+    with pytest.raises(ValueError):
+        DerivedArtifactProvenance.build(ArtifactType.QUALITY_ANNOTATION, _edges("r1"), "", "1")
+    with pytest.raises(ValueError):
+        DerivedArtifactProvenance.build(ArtifactType.QUALITY_ANNOTATION, _edges("r1"), "p", "")
+
+
+def test_empty_input_id_rejected():
+    with pytest.raises(ValueError):
+        DerivedArtifactProvenance.build(
+            ArtifactType.QUALITY_ANNOTATION, (ArtifactInput(InputType.SOURCE_RECORD, ""),), "p", "1"
+        )
+
+
+def test_evidence_confidence_range_enforced():
+    from open_us_law_coverage.derived import Evidence
+
+    Evidence("k", "d")  # None is fine
+    Evidence("k", "d", confidence=0.0)
+    Evidence("k", "d", confidence=1.0)
+    with pytest.raises(ValueError):
+        Evidence("k", "d", confidence=1.5)
+    with pytest.raises(ValueError):
+        Evidence("k", "d", confidence=-0.1)

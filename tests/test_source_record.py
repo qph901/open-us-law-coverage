@@ -287,6 +287,112 @@ def test_original_columns_is_read_only(fixture_parquet: Path):
 
 
 # ---------------------------------------------------------------------------
+# Public-constructor hardening (review P2): the model itself, not only the
+# reader, guarantees its advertised invariants.
+# ---------------------------------------------------------------------------
+
+_INT_METADATA = {"word_count", "last_amended_year", "subsection_count", "year"}
+
+
+def _full_metadata(**overrides):
+    """A complete, valid metadata mapping: exactly the 23 METADATA_COLUMNS."""
+    md = {name: (0 if name in _INT_METADATA else "x") for name in METADATA_COLUMNS}
+    md["act_id"] = "USC_T1_S1"
+    md.update(overrides)
+    return md
+
+
+def _valid_record(**overrides):
+    """Build a self-consistent record directly (bypassing the reader)."""
+    snapshot, checksum, ordinal, text = "v2026.08", "abc123", 0, "hello"
+    fields = dict(
+        source_record_id=compute_source_record_id(snapshot, checksum, ordinal),
+        snapshot_version=snapshot,
+        source_file="us_x.parquet",
+        source_file_checksum=checksum,
+        physical_row_ordinal=ordinal,
+        original_columns=_full_metadata(),
+        raw_text=text,
+        raw_text_hash=compute_raw_text_hash(text),
+    )
+    fields.update(overrides)
+    return CanonicalSourceRecord(**fields)
+
+
+def test_direct_construction_defensively_copies_columns():
+    caller_owned = _full_metadata()
+    rec = _valid_record(original_columns=caller_owned)
+    caller_owned["act_id"] = "TAMPERED"  # must not leak in
+    assert rec.column("act_id") == "USC_T1_S1"
+    with pytest.raises(TypeError):
+        rec.original_columns["act_id"] = "x"  # type: ignore[index]
+
+
+def test_metadata_keys_must_be_exactly_metadata_columns():
+    with pytest.raises(ValueError):  # missing a key
+        _valid_record(original_columns={"act_id": "USC_T1_S1"})
+    with pytest.raises(ValueError):  # extra key
+        _valid_record(original_columns=_full_metadata(surprise="x"))
+
+
+def test_metadata_scalar_types_are_validated():
+    # nested / non-scalar value in a string column
+    with pytest.raises(TypeError):
+        _valid_record(original_columns=_full_metadata(citation=["nested"]))
+    with pytest.raises(TypeError):
+        _valid_record(original_columns=_full_metadata(chapter={"k": "v"}))
+    # wrong scalar kind: an int where a string column belongs, and vice-versa
+    with pytest.raises(TypeError):
+        _valid_record(original_columns=_full_metadata(citation=5))
+    with pytest.raises(TypeError):
+        _valid_record(original_columns=_full_metadata(word_count="not-an-int"))
+    # nulls are allowed for any metadata column
+    rec = _valid_record(original_columns=_full_metadata(citation=None, word_count=None))
+    assert rec.column("citation") is None
+    assert rec.column("word_count") is None
+
+
+def test_direct_construction_recomputes_hash_and_id():
+    rec = _valid_record(source_record_id="", raw_text_hash=None)
+    assert rec.source_record_id == compute_source_record_id("v2026.08", "abc123", 0)
+    assert rec.raw_text_hash == compute_raw_text_hash("hello")
+
+
+def test_inconsistent_id_or_hash_is_rejected():
+    with pytest.raises(ValueError):
+        _valid_record(source_record_id="srr:sha256:not-the-real-one")
+    with pytest.raises(ValueError):
+        _valid_record(raw_text_hash="sha256:wrong")
+
+
+def test_invalid_scalar_shape_is_rejected():
+    with pytest.raises(ValueError):
+        _valid_record(physical_row_ordinal=-1)
+    with pytest.raises(ValueError):
+        _valid_record(snapshot_version="")
+
+
+def test_arrow_type_validation_rejects_wrong_column_type(tmp_path: Path):
+    """A file whose Arrow field types drift from the uniform schema is rejected
+    before it is read (review P2)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq_
+
+    from open_us_law_coverage.source_record import SchemaMismatchError
+
+    # word_count should be integer; make it a string to force a type mismatch.
+    fields = []
+    for name in EXPECTED_COLUMNS:
+        typ = pa.string()  # everything string, including the int columns
+        fields.append(pa.field(name, typ))
+    table = pa.table({name: ["x"] for name in EXPECTED_COLUMNS}, schema=pa.schema(fields))
+    path = tmp_path / "bad_types.parquet"
+    pq_.write_table(table, path)
+    with pytest.raises(SchemaMismatchError, match="integer"):
+        read_source_records(path, SNAPSHOT)
+
+
+# ---------------------------------------------------------------------------
 # Opt-in check against the committed real sample (skips if gated data absent).
 # ---------------------------------------------------------------------------
 

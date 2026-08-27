@@ -48,6 +48,11 @@ class ArtifactType(StrEnum):
     SOURCE_IDENTITY_ANNOTATION = "source_identity_annotation"
     DOCUMENT_CLASSIFICATION_ANNOTATION = "document_classification_annotation"
     QUALITY_ANNOTATION = "quality_annotation"
+    # The detector-run/scope artifact a cross-record quality conclusion names as an
+    # input — content-addressed by the *complete* identity-group member set, so any
+    # change to membership changes it and the provenance of every conclusion it
+    # scopes (M1A.5 review B1).
+    DUPLICATE_SCOPE = "duplicate_scope"
     SOURCE_DOCUMENT_ASSEMBLY = "source_document_assembly"
 
 
@@ -68,6 +73,14 @@ class Evidence:
     kind: str
     detail: str
     confidence: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.confidence is not None and not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(
+                f"Evidence.confidence must be in [0, 1] or None, got {self.confidence!r}"
+            )
+        if not self.kind:
+            raise ValueError("Evidence.kind must be non-empty")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +106,19 @@ def _sha256_hex(data: bytes) -> str:
 
 def _canonical_input(edge: ArtifactInput) -> str:
     return f"{edge.input_type}{_UNIT}{edge.input_id}"
+
+
+def canonicalize_inputs(inputs: Iterable[ArtifactInput]) -> tuple[ArtifactInput, ...]:
+    """The one canonical stored order for a content-addressed input set.
+
+    Input order is **not** semantically load-bearing (the id sorts before hashing),
+    so the *stored* edges are sorted by the same key. This makes equal ``artifact_id``
+    imply an equal serialized ``inputs`` tuple — two provenances built from the same
+    set in different orders are byte-identical objects, not just id-equal (M1A.5
+    review P1). Callers that need input-order correspondence keep it separately (e.g.
+    the per-member annotation list produced alongside a scope artifact).
+    """
+    return tuple(sorted(inputs, key=_canonical_input))
 
 
 def compute_artifact_id(
@@ -138,6 +164,37 @@ class DerivedArtifactProvenance:
     producer_version: str
     config_hash: str = ""
     generated_at: str | None = None  # audit metadata only; NEVER in artifact_id
+
+    def __post_init__(self) -> None:
+        """Enforce the content-addressing contract even for direct construction.
+
+        A directly-built provenance whose stored ``artifact_id`` does not match a
+        recomputation over its declared inputs is a corrupt DAG node — reject it
+        rather than let it name a body it does not address (M1A.5 review P6). Input
+        order is *not* load-bearing (``compute_artifact_id`` sorts), but duplicate
+        edges are rejected: they would silently double-count a dependency.
+        """
+        if not self.producer_name or not self.producer_version:
+            raise ValueError("producer_name and producer_version must be non-empty")
+        for edge in self.inputs:
+            if not edge.input_id:
+                raise ValueError("every ArtifactInput.input_id must be non-empty")
+        if len(set(self.inputs)) != len(self.inputs):
+            raise ValueError(f"duplicate provenance edges are not allowed: {self.inputs}")
+        # Canonicalize stored input order so equal ids <=> equal serialized objects.
+        object.__setattr__(self, "inputs", canonicalize_inputs(self.inputs))
+        expected = compute_artifact_id(
+            self.artifact_type,
+            self.inputs,
+            self.producer_name,
+            self.producer_version,
+            self.config_hash,
+        )
+        if self.artifact_id != expected:
+            raise ValueError(
+                f"artifact_id {self.artifact_id!r} is inconsistent with its inputs "
+                f"(recomputed {expected!r})"
+            )
 
     @classmethod
     def build(

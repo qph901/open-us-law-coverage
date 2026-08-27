@@ -16,7 +16,7 @@ segment-order spike), and **M1A (the immutable `CanonicalSourceRecord` core)** a
 the source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1.
 **M1A.5** (the shared derived-artifact foundation) is **scaffolded** — the `DerivedArtifactProvenance`
 multi-input DAG + `SourceIdentityAnnotation`(shape) + `DocumentClassificationAnnotation`(deterministic)
-+ `QualityAnnotation`(duplicate-only) + `SourceDocumentAssembly`(`trivial_single_record_v1`) + the
++ `QualityAnnotation`(duplicate-only) + `SourceDocumentAssembly`(`trivial_single_record_v2`) + the
 durable-FK test all live in `src/open_us_law_coverage/derived/`; the concrete `SourceIdentityStrategy`
 producers and the CFR multi-row composer are **not** built yet. **M0.5B2** (hierarchy stress test) and
 **M0.5B3** (CA abstraction-falsification probe) are **complete** (`reports/M0.5B2_hierarchy.md`,
@@ -42,11 +42,15 @@ uv run python -m open_us_law_coverage.snapshot_diff --old <old.parquet> --new <n
 ```
 
 The dataset is **gated** on Hugging Face; downloads need `HF_TOKEN` (a gated-repo read token) in the
-environment. `scripts/download.py` reads it from the env and verifies every file against the
-snapshot's `SHA256SUMS.json`:
+environment. `scripts/download.py` reads it from the env, **pins to an immutable dataset revision**
+(M1A.5 review P3 — a moving ref like `main` could certify newer bytes under an older snapshot label),
+and verifies every file (streamed, not `read_bytes`) against the snapshot's `SHA256SUMS.json`, writing
+the resolved revision to `data/<snapshot>/DOWNLOAD_METADATA.json`. Map the label in
+`SNAPSHOT_REVISIONS` or pass an immutable `--revision`:
 
 ```bash
-HF_TOKEN=hf_... uv run python scripts/download.py            # M0 sample -> data/v2026.08/
+HF_TOKEN=hf_... uv run python scripts/download.py \
+    --snapshot v2026.08 --revision <immutable-commit-sha-or-tag>   # M0 sample -> data/v2026.08/
 ```
 
 > If `HF_TOKEN` lives in `~/.bashrc`, note it may be behind the interactive-shell early-return, so a
@@ -68,9 +72,13 @@ emit Markdown; neither has runtime dependencies on the other:
   `analyze_file` per Parquet file produces a `FileReport`; `render_report` / `render_summary` format
   the list. Accepts any file glob, so the same code runs on the 4-file sample or the full 229-file
   snapshot.
-- `src/open_us_law_coverage/snapshot_diff.py` → `reports/M0_act_id_stability.md`. Diffs the *same*
-  corpus file across two snapshots to answer the one question a single snapshot can't:
-  does `act_id` survive text-only amendment (vs. change on renumber/transfer)?
+- `src/open_us_law_coverage/snapshot_diff.py` → `reports/M0_act_id_stability.md` (+
+  `tests/test_snapshot_diff.py`). Diffs the *same* corpus file across two snapshots to answer the one
+  question a single snapshot can't: does `act_id` survive text-only amendment (vs. change on
+  renumber/transfer)? Determinism/claim-scope hardened (M1A.5 review P4): sampled ids are **sorted**,
+  the text hash **preserves the null/empty distinction** (null → a sentinel, not `""`), and the prose
+  is narrowed to what set membership actually proves (stated successors are extracted but **not**
+  resolved to records; `removed=0` proves only that no old id was dropped, not non-reissue).
 - `src/open_us_law_coverage/identity_collisions.py` → `reports/M0.5A_identity_collisions.md` (M0.5A).
   Enumerates every corpus where `act_id` repeats and classifies each collision group by *phenomenon*
   (ETL duplicate row vs. multi-segment document vs. shared namespace) **before** recommending a key.
@@ -94,11 +102,15 @@ emit Markdown; neither has runtime dependencies on the other:
   row-group. Two load-bearing results it established (design against these): (1) the v2026.07↔v2026.08
   comparison PROPOSAL asked for has an **empty domain** — regulations are new in v2026.08, so
   cross-snapshot segment/order stability is **untestable** until a second regulations snapshot; (2)
-  `FR_*` distinct-text collisions are **co-numbered distinct documents, not ordered segments**
-  (scattered rows, ≈0% mid-sentence continuation, ≈96% share an agency preamble) — so `segment_ordinal`
-  is *snapshot-observed physical row order* only, never a reading order, and FR full-text concatenation
-  is invalid. Exit-question verdicts live in `EXIT_SECTION` (embedded, qualitative prose so it never
-  drifts from the computed tables). Regenerate with:
+  `FR_*` distinct-text collisions show **no evidence of ordered single-document segmentation**
+  (scattered rows, ≈0% lowercase-seam continuation, ≈96% share an agency preamble) — so the hard,
+  load-bearing conclusion is **negative**: FR full-text concatenation is invalid and `segment_ordinal`
+  is *snapshot-observed physical row order* only, never a reading order. The stronger positive claim
+  ("each row is a self-contained capture") is **supported, not established** (M1A.5 review P5): the
+  sample is lexically biased and the lowercase-seam continuation proxy is coarse — a stratified sample
+  + structural continuation detector is future work before promoting that mechanism. Exit-question
+  verdicts + methodology caveats live in `EXIT_SECTION` (embedded, qualitative prose so it never drifts
+  from the computed tables). Regenerate with:
 
   ```bash
   uv run python -m open_us_law_coverage.segment_provenance data/v2026.08_full/*_regulations.parquet \
@@ -107,16 +119,21 @@ emit Markdown; neither has runtime dependencies on the other:
   ```
 - `src/open_us_law_coverage/source_record.py` → `tests/test_source_record.py` (M1A). The immutable,
   lossless `CanonicalSourceRecord` core — **not** a report harness; its deliverable is the model +
-  the golden-fixture acceptance suite. `CanonicalSourceRecord` is a `@dataclass(frozen=True)` with
-  `original_columns` as a `MappingProxyType`, so neither the record nor its preserved columns can be
-  mutated (this is what makes the boundary test enforceable). `source_record_id =
+  the golden-fixture acceptance suite. `CanonicalSourceRecord` is a `@dataclass(frozen=True)` whose
+  `__post_init__` (M1A.5 review P2) defensively copies `original_columns` into a `MappingProxyType`,
+  requires the keys to be **exactly `METADATA_COLUMNS`** with **nullable scalar** values (int for the
+  four int columns, str otherwise — nested/non-scalar rejected), and recomputes/validates
+  `source_record_id`/`raw_text_hash` — so **direct construction**, not only the reader, guarantees the
+  same source shape + immutability + self-consistency (inconsistent id/hash or bad shape raises).
+  `source_record_id =
   compute_source_record_id(snapshot_version, source_file_checksum, physical_row_ordinal)` and
   `raw_text_hash = compute_raw_text_hash(raw_text)` are **pure module functions** so tests recompute
   identity independently; the id derives from physical coordinates only (never content/citation), and
   the hash is over **raw** `text` bytes (never normalized/operative). `iter_source_records` is the
   streaming reader (row-group-bounded per the OOM invariant below — one row-group of `text` in flight,
   pool released between groups); `read_source_records` is the eager wrapper for small/fixture files
-  only. It validates the 24-column schema (`SchemaMismatchError`) and assigns `physical_row_ordinal`
+  only. It validates the 24-column schema **and its Arrow field types** (`SchemaMismatchError`; the
+  four int columns must be integer, the rest string — M1A.5 review P2) and assigns `physical_row_ordinal`
   by an insertion-preserving read (row groups in file order, rows in row-group order). The tests are
   hermetic — `tests/conftest.py` synthesizes a multi-row-group Parquet (unicode, null text, null
   metadata, empty string, byte-identical twins); `test_real_sample_roundtrip` additionally checks the
@@ -131,15 +148,37 @@ emit Markdown; neither has runtime dependencies on the other:
   `provenance.py` is the **multi-input DAG** — `DerivedArtifactProvenance.build(...)` computes a
   content-addressed `artifact_id = compute_artifact_id(artifact_type, sorted(inputs), producer_name,
   producer_version, config_hash)` with `generated_at` **excluded**; edges are `ArtifactInput(input_type,
-  input_id)` and durable references anchor to `source_record_id` (never `source_identity_key`).
-  Producers, each anchoring provenance to `source_record_id`: `classification.classify_source_record`
-  (near-deterministic, keyed on the `act_id` namespace prefix — `FR_*`→federal_register/promulgation,
-  everything else per `_PREFIX_MAP`, unknown abstains; `fr_default_off` is the retrieval-policy hook),
-  `quality.detect_duplicate_rows` (**`duplicate_row` only** — contamination detector deferred;
-  cross-record, flags byte-identical `raw_text_hash` within a caller-chosen scope, never deletes),
-  and `assembly.assemble_trivial_single_record` (`trivial_single_record_v1`: one member, `KEEP`,
-  `complete`, `assembled_text = raw_text` verbatim — **`legal_id` attaches to the assembly, not the
-  row**). Closed vocabularies are `enum.StrEnum` (3.12). `SourceIdentityAnnotation`
+  input_id)` and durable references anchor to `source_record_id` (never `source_identity_key`). **Stored
+  `inputs` are canonicalized (sorted) too** (M1A.5 review P1: `canonicalize_inputs`), so equal
+  `artifact_id` ⇒ byte-identical serialized object (reversing inputs yields the same object, not just
+  the same id); the same rule canonicalizes `DuplicateScope.member_source_record_ids`.
+  `DerivedArtifactProvenance` also carries model invariants (M1A.5 review P6): a directly-constructed
+  node whose stored `artifact_id` doesn't content-address its inputs, or that has duplicate edges /
+  empty producer ids, is rejected; `Evidence.confidence` is range-checked. Producers, each anchoring
+  provenance to `source_record_id`: `classification.classify_source_record` (**broad class from the
+  100%-populated `document_type` column, not the `act_id` prefix** — the `STATE_*` prefix collapses
+  **1,942,637** statutes with **289,797** regulations; the prefix only *refines* a regulation into
+  `codified_cfr` (`CFR_*`) vs `federal_register` (`FR_*`) and, for the operative namespaces with a fixed
+  expectation, gates a `document_type`/prefix **conflict → abstain to `unknown`@0.0**. **Prefix evidence
+  is truthful** (M1A.5 review P3): only a prefix that actually refined or confirmed carries confidence;
+  an ambiguous/non-refining prefix (`STATE`) gets explicit non-refining evidence with no confidence.
+  `fr_default_off` is the retrieval-policy hook; producer is now `v2`),
+  `quality.detect_duplicate_rows` (**`duplicate_row` only** — contamination detector deferred; returns
+  a `DuplicateDetectionResult`: a `DuplicateScope` artifact content-addressed by the **complete
+  identity-group member set** + one `QualityAnnotation` per member naming `[scope, this record]` as
+  inputs, so a sibling-set change re-hashes every conclusion and two conclusions never share an id;
+  **scope is one identity group, never a file/corpus**; flags byte-identical `raw_text_hash`, never
+  deletes; consumers read `quality_flags` via `is_duplicate_row`, not `quality_status`),
+  and `assembly.assemble_trivial_single_record` (**`trivial_single_record_v2`**, producer version `2`
+  — v1 is deprecated/invalid and never persisted; the bump is because the corrected object differs from
+  v1 for the same record, so ids must not collide: one member, `KEEP`, `assembled_text = raw_text`
+  verbatim; **null `raw_text` → `noncomposable`**, `""` → `complete`).
+  `SourceDocumentAssembly` model invariants (M1A.5 review P2): provenance `artifact_type` must be
+  `source_document_assembly`, its source-record inputs must equal the assembly members, and the **full
+  status/text matrix** holds (`complete`/`partial` ⇒ non-null returnable text; `noncomposable`/`ambiguous`
+  ⇒ null text; hash follows text). The assembly is content-addressed by its physical members and carries
+  **no `source_identity_key`** — the mutable key + `legal_id` live on a separate versioned
+  `AssemblyIdentityAssociation` via `associate_assembly_with_identity`, so key A/B point at one assembly id. Closed vocabularies are `enum.StrEnum` (3.12). `SourceIdentityAnnotation`
   (`identity.py`) is the shape only — it **groups/characterizes, never composes**; concrete strategies
   (`usc_act_id_v1`/`cfr_identity_v1`/…) and the CFR multi-row composer (`cfr_source_assembly_v1`) land
   in the CFR path, not here. Duck-typed on `.source_record_id`/`.column('act_id')`, so `derived/` has

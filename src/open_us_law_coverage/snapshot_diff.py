@@ -45,11 +45,20 @@ def _operative(text: str | None) -> str:
     return NOTES_SPLIT_RE.split(text or "", maxsplit=1)[0].strip()
 
 
+def _hash_one(s: str | None) -> str:
+    # Preserve the null/empty distinction (M1A.5 review P4): a null body and an
+    # empty-string body are different states, so they must not share a hash. Null
+    # maps to a sentinel that no sha256 hex digest can collide with.
+    if s is None:
+        return "NULL"
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
 def _hash_col(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(
-        pl.col("text").fill_null("").map_elements(
-            lambda s: hashlib.sha256(s.encode()).hexdigest(), return_dtype=pl.String
-        ).alias("_text_hash")
+        pl.col("text")
+        .map_elements(_hash_one, return_dtype=pl.String, skip_nulls=False)
+        .alias("_text_hash")
     )
 
 
@@ -69,9 +78,10 @@ def diff(old: pl.DataFrame, new: pl.DataFrame) -> dict:
     added = new_ids - old_ids
     removed = old_ids - new_ids
 
-    # Examples of stable-amended ids (the key evidence).
+    # Examples of stable-amended ids (the key evidence). Sorted so the sampled
+    # examples are deterministic across runs (M1A.5 review P4).
     amended_ids = [i for i in common if old_hash[i] != new_hash[i]]
-    amended_examples = amended_ids[:8]
+    amended_examples = sorted(amended_ids)[:8]
 
     # Characterize the "amendments": append-only growth vs shrink, and how many
     # are operative-text-identical (i.e. only the editorial-notes apparatus moved).
@@ -140,10 +150,15 @@ def render(d: dict, old_label: str, new_label: str, name: str) -> str:
     w("## Verdict\n")
     if d["amended"] > 0 and d["unchanged"] >= 0:
         w(
-            f"**`act_id` survives text-only amendment.** {d['amended']:,} act_ids appear in "
-            f"*both* snapshots with **different text** — the identifier held constant while the "
-            f"provision's text changed. This confirms the proposal's Tier-1 assumption: "
-            f"`act_id` is a safe stable-source identity seed under ordinary amendment.\n"
+            f"**Supporting evidence that `act_id` is stable under text change.** "
+            f"{d['amended']:,} act_ids appear in *both* snapshots with **different text** — the "
+            f"identifier held constant while the stored `text` changed. This is *consistent with* "
+            f"the proposal's Tier-1 assumption that `act_id` is a stable-source identity seed, but "
+            f"it does **not** by itself confirm it: same-id/different-text cannot, on its own, "
+            f"distinguish a genuine legal amendment from editorial-notes expansion (see the caveat "
+            f"below — a large share is exactly that) or from an `act_id` being reused for a "
+            f"different provision. Treat it as one supporting signal, corroborated by the "
+            f"operative-body split below, not as proof.\n"
         )
     else:
         w(
@@ -213,9 +228,13 @@ def render(d: dict, old_label: str, new_label: str, name: str) -> str:
         f"Of {d['move_rows']:,} disposition-status rows checked, "
         f"{d['move_with_successor']:,} state a successor number inline in the text, and "
         f"{d['move_self_in_old']:,} have an act_id that already existed in `{old_label}`. "
-        "A move keeps *its own* (old) number as the row's act_id while pointing at the "
-        "successor — so the successor provision carries a **different** act_id, exactly why "
-        "cross-move identity cannot ride on act_id and must be linked via `lineage_id`.\n"
+        "The move row keeps *its own* (old) number as the row's act_id while its text points "
+        "at a successor number. **The stated successor is extracted from the text but not "
+        "resolved to an actual old/new record here**, so this pass does not by itself prove the "
+        "successor carries a different act_id — it establishes only that the move row retains "
+        "its own identifier. That retention is already enough motivation to link cross-move "
+        "identity via `lineage_id` rather than assume act_id follows the provision; resolving "
+        "the successor pointer to a record is future lineage work.\n"
     )
     if d["move_examples"]:
         w("| act_id | status | self in old? | successor stated |")
@@ -241,9 +260,12 @@ def _summary_table(results: list[tuple[str, dict]]) -> list[str]:
             f"{d['added']:,} | {d['removed']:,} | {stable} |"
         )
     L.append(
-        "\n_`removed = 0` across every corpus ⇒ no act_id ever disappeared or was reissued "
-        "between snapshots; `added` is genuinely new sections; `amended` is byte-level text "
-        "change (federal is inflated by editorial-note growth — see per-file detail)._\n"
+        "\n_`removed = 0` across every corpus ⇒ every `act_id` present in the old snapshot is "
+        "still present in the new one (none dropped); `added` are `act_id`s new to the new "
+        "snapshot **by set membership**; `amended` counts byte-level `text` change (federal is "
+        "inflated by editorial-note growth — see per-file detail). Set membership alone does "
+        "**not** establish that an id was never reissued to a different provision, nor that an "
+        "`added` id is a brand-new enactment rather than the target of a renumber._\n"
     )
     return L
 

@@ -205,7 +205,7 @@ producer_version      # a.k.a. parser_version
 config_hash           # a.k.a. parser_config_hash
 generated_at       # audit metadata only; never in artifact_id
 ```
-Every artifact anchors durable references to `source_record_id` (via an `inputs[]` edge of type `source_record`), **never** to `source_identity_key`. The **sorted-input-set** hash means two artifacts over different member sets never collide, and the DAG makes the recompute frontier on a new snapshot **computable** — recompute exactly the artifacts whose input set changed. A per-record annotation is simply the single-input case (`inputs = [that one source_record]`); a build-time oracle (USLM/eCFR edition) enters as an `oracle_edition` input, so `operative_text_hash`/`assembled_text_hash` honor the full-input reproducibility contract. Excluding `generated_at` from `artifact_id` keeps the id content-addressed (a byte-identical recompute yields the same id). `DocumentAnatomy`, `HierarchyTree`, `LegalChunk`, `ReferenceMention`, `LineageMention`, and `SourceDocumentAssembly` all follow this model rather than inventing their own.
+Every artifact anchors durable references to `source_record_id` (via an `inputs[]` edge of type `source_record`), **never** to `source_identity_key`. The **sorted-input-set** hash means two artifacts over different member sets never collide, and the DAG makes the recompute frontier on a new snapshot **computable** — recompute exactly the artifacts whose input set changed. A per-record annotation is simply the single-input case (`inputs = [that one source_record]`); a build-time oracle (USLM/eCFR edition) enters as an `oracle_edition` input, so `operative_text_hash`/`assembled_text_hash` honor the full-input reproducibility contract. Excluding `generated_at` from `artifact_id` keeps the id content-addressed (a byte-identical recompute yields the same id). Stored `inputs[]` are **canonicalized (sorted) as well as hashed sorted** (M1A.5 review P1), so equal `artifact_id` ⇒ byte-identical serialized object — reversing the inputs produces the same object, not merely the same id; callers needing input-order correspondence keep it in a separate list (e.g. the per-member quality annotations beside a `DuplicateScope`). `DocumentAnatomy`, `HierarchyTree`, `LegalChunk`, `ReferenceMention`, `LineageMention`, and `SourceDocumentAssembly` all follow this model rather than inventing their own.
 
 ### `SourceIdentityAnnotation` — versioned; groups/characterizes only, never composes (fed by M0.5A.1)
 ```
@@ -233,44 +233,56 @@ authority_role   # operative_primary_law | promulgation_record | editorial_mater
                  #   guidance | unknown
 confidence
 ```
-Even where trivially deterministic (an `FR_*` prefix ⇒ Federal Register), it is our semantic interpretation of a source field. Keep it regenerable. The first producer is near-deterministic (`CFR_*` → `codified_cfr` / `operative_primary_law`; `FR_*` → `federal_register` / `promulgation_record`). **`corpus` is not sufficient to describe legal role** — `document_class`/`authority_role` are first-class, and downstream policy must not assume same-corpus ⇒ same retrieval semantics. **Test the retrieval-policy consequence now:** Federal Register defaults **OFF** for present-law / exact-CFR resolution (consistent with the M0.5A.1 finding that `FR_*` rows are co-numbered captures, not operative law).
+Even where trivially deterministic (an `FR_*` prefix ⇒ Federal Register), it is our semantic interpretation of source fields. Keep it regenerable. **The broad class comes from the 100%-populated `document_type` column, not the `act_id` prefix** (M1A.5 review B2): the `STATE_*` namespace collapses **1,942,637** statute rows with **289,797** *regulation* rows (full v2026.08 snapshot), so a prefix-only producer labels every one `statute` at confidence 1.0 and can never reach `regulation`/`court_rule`/`guidance`. `document_type` carries `statute`/`regulation`/`constitution`/`court_rule`/`guidance` (plus a sub-regulatory guidance family — `ruling`, `irs_notice`, `faq`, … — that maps to `guidance`). The `act_id` prefix is then used only to (a) **refine** a regulation into `codified_cfr` (`CFR_*`) vs. `federal_register` (`FR_*`), and (b) for the few operative namespaces with a fixed expectation (`USC`/`CFR`/`FR`/`SCONST`/`SREGS`/`SRULES`/`FRULES`), **detect a `document_type`/prefix contradiction** → abstain to `unknown` at confidence 0.0, retaining both signals as evidence. `STATE_*` has no fixed expectation (genuinely ambiguous), so it never conflicts and never disambiguates on its own. Document types with no home in the closed vocabulary (`executive_order`/`proclamation`/`treaty`/…) abstain rather than take a wrong label. **`corpus` is not sufficient to describe legal role** — `document_class`/`authority_role` are first-class, and downstream policy must not assume same-corpus ⇒ same retrieval semantics. **Test the retrieval-policy consequence now:** Federal Register defaults **OFF** for present-law / exact-CFR resolution (consistent with the M0.5A.1 finding that `FR_*` rows are co-numbered captures, not operative law).
 
 ### `QualityAnnotation` — versioned (first producer: `duplicate_row` only)
 ```
-(DerivedArtifactProvenance)
-quality_status    # unknown | clean | suspicious | rejected  (default unknown;
-                 #   first producer emits only unknown / duplicate)
-quality_flags[]   # duplicate_row (a cross-record conclusion, not a source assertion).
-                 #   Later producers add: navigation/footer text, header repetition,
-                 #   HTML remnants, encoding damage, suspiciously identical text across
-                 #   many sections, missing legal markers
-evidence[]
+DuplicateScope                          # a first-class detector-run artifact:
+  (DerivedArtifactProvenance)           #   inputs = the COMPLETE identity-group member set
+  member_source_record_ids[]            #   (sorted); content-addressed by that set
+QualityAnnotation                       # one per member of the scope
+  (DerivedArtifactProvenance)           #   inputs = [DuplicateScope, this source_record]
+  target_source_record_id               #   the row this conclusion is about
+  quality_status    # unknown | clean | suspicious | rejected  (first producer: unknown)
+  quality_flags[]   # duplicate_row (a cross-record conclusion, not a source assertion).
+                   #   Later producers add: navigation/footer text, header repetition,
+                   #   HTML remnants, encoding damage, missing legal markers
+  evidence[]
 ```
 Quality is a cross-record conclusion, versioned by detector — kept **outside** the source record and its immutability hash. **Do not delete** suspicious rows — exclude from normal retrieval, preserve for investigation. (The withdrawn GA/NC statutes with leaked nav text are the cautionary tale; contamination enters at jurisdiction scale, so we need somewhere to represent it.)
+
+**Complete, identity-group-scoped provenance (M1A.5 review B1).** A duplicate conclusion depends on *sibling* rows, so a per-record annotation that hashed only its own record would give the same `artifact_id` to two different conclusions (a record is unflagged alone, flagged beside a byte-identical twin) — a corrupt content-addressed DAG with an incomplete recompute frontier. The fix: a detector run is a `DuplicateScope` artifact content-addressed by the *complete* member set, and each per-record annotation names both the scope and its own record as inputs. Changing the sibling set changes the scope id and therefore every conclusion; two members never collide (their target edge differs). **Scope is one candidate identity group, never a whole file/corpus** — CA has thousands of byte-identical rows across *distinct* provisions (`[Reserved]`/`[Repealed]`/boilerplate; `reports/M0.5B3_ca_abstraction.md`), so `duplicate_row` means "same bytes within the identity group," never "same legal identity." `quality_status` stays `unknown`; the **flag** is the load-bearing signal consumers read.
 
 **Scope-down (decision D):** the first `QualityAnnotation` producer is `duplicate_row` only, because assembly needs duplicate detection as an input and that is on the immediate path. The contamination detector (`clean` / `suspicious` / `rejected`, the GA/NC-boilerplate case) is **not** on the immediate path — nothing at risk is being assembled yet — so the interface exists now but that producer defers until a corpus at risk is ingested.
 
 ### `SourceDocumentAssembly` — versioned (composes an identity group into text)
 ```
-(DerivedArtifactProvenance)          # inputs = member source_record_ids [+ oracle_edition if used]
-source_identity_key                   # the group this assembles
-member_source_record_ids[]
-member_roles[]        # primary | continuation | duplicate | alternative | ambiguous
-operations[]          # KEEP | APPEND | IGNORE_DUPLICATE | KEEP_SEPARATE | ABSTAIN
-assembly_strategy     # cfr_source_assembly_v1 | trivial_single_record_v1 | ...
-assembly_status       # complete | partial | ambiguous | noncomposable
-assembled_text        # null when noncomposable / ambiguous
-assembled_text_hash   # cross-snapshot change signal for multi-row sections
-evidence[]
+SourceDocumentAssembly                # content-addressed by its physical members
+  (DerivedArtifactProvenance)         # inputs = member source_record_ids [+ oracle_edition if used]
+  member_source_record_ids[]          # NO source_identity_key field (see below)
+  member_roles[]        # primary | continuation | duplicate | alternative | ambiguous
+  operations[]          # KEEP | APPEND | IGNORE_DUPLICATE | KEEP_SEPARATE | ABSTAIN
+  assembly_strategy     # cfr_source_assembly_v1 | trivial_single_record_v2 | ...  (v1 deprecated)
+  assembly_status       # complete | partial | ambiguous | noncomposable
+  assembled_text        # null when noncomposable / ambiguous
+  assembled_text_hash   # cross-snapshot change signal for multi-row sections
+  confidence            # assembly-level, in [0,1]
+  evidence[]
+AssemblyIdentityAssociation           # SEPARATE, versioned; NOT content-addressed into the assembly
+  source_identity_key                 # the (mutable) identity-strategy key
+  assembly_artifact_id                # -> the immutable assembly above
+  strategy_name / strategy_version
+  legal_id                            # attaches here
 ```
-Assembly is the layer that *composes* member records of a `source_identity_key` group into a single document text — the decision identity is forbidden from making. It sits **between identity and anatomy**; anatomy validates a candidate assembly (one coherent operative structure ⇒ corroborate; N self-contained structures ⇒ reject), it never generates the assembly.
+Assembly is the layer that *composes* the member records of an identity group into a single document text — the decision identity is forbidden from making. It sits **between identity and anatomy**; anatomy validates a candidate assembly (one coherent operative structure ⇒ corroborate; N self-contained structures ⇒ reject), it never generates the assembly.
 
-- One-row corpora (the 99% case) use `trivial_single_record_v1`: one member, `KEEP`, `assembly_status = complete`, `assembled_text = raw_text`. Assembly stays near-free for the common case.
-- **`legal_id` attaches to the assembly, not the row** — this is the single attach point the assembly layer exists to provide (M0.5A.1 empirically disproved 1:1 source-to-document).
+- One-row corpora (the 99% case) use `trivial_single_record_v2`: one member, `KEEP`, `assembled_text = raw_text` (producer version `2`; **v1 is deprecated/invalid** — the corrected producer removed `source_identity_key`, added `confidence`, and made null text `noncomposable`, so it must not share v1's `artifact_id`; no v1 artifacts were ever persisted). Assembly stays near-free for the common case.
+- **The assembly is content-addressed by its physical members, and carries no `source_identity_key`** (M1A.5 review B3). An unhashed identity key on a content-addressed object would let two different bodies share one `artifact_id`. The mutable key — and `legal_id` — live on a **separate versioned `AssemblyIdentityAssociation`** that may be re-emitted when an identity strategy improves *without* creating two assembly bodies under one id. So `legal_id` still attaches at the assembly level (M0.5A.1 disproved 1:1 source-to-document), just via that association rather than as a field on the immutable artifact.
+- **Eligibility invariant (M1A.5 review P1): `assembly_status == complete` ⇒ a non-null, returnable `assembled_text`.** A **null** source body is `noncomposable` (nothing to return); an empty string `""` is a valid *complete* empty provision. Every stored field is a deterministic function of the declared inputs, enforced by model invariants (M1A.5 review P2): parallel member/role/operation lengths; the provenance `artifact_type` is `source_document_assembly` and its source-record inputs equal the assembly members; the **full status/text matrix** (`complete`/`partial` ⇒ non-null returnable text, `noncomposable`/`ambiguous` ⇒ null text) with the hash following the text; and `confidence ∈ [0,1]`.
 - The **plan/assembly split was cut** (decision A/D): operations, member roles, evidence, confidence, and status live as fields *on* `SourceDocumentAssembly`. There was no "validate the plan before materializing" step to hang a second artifact on — the anatomy validator runs on the materialized candidate text, not on a plan. If a human-in-the-loop approval workflow ever appears, re-splitting is trivial because the fields already exist.
 
 ### Durable-FK test (ships with `SourceIdentityAnnotation`)
-Assert: identity strategy v1 (key A) and v2 (key B) coexist over the same records; downstream provenance referencing those records stays valid; no immutable artifact is keyed by `source_identity_key`. Extend the same coexistence test to assembly v1/v2 over the same members.
+Assert: identity strategy v1 (key A) and v2 (key B) coexist over the same records; downstream provenance referencing those records stays valid; no immutable artifact is keyed by `source_identity_key`. Because the key lives only on the separate `AssemblyIdentityAssociation`, key A and key B associate with the **same** assembly `artifact_id` without changing the assembly body. Extend the same coexistence test to assembly v1/v2 over the same members.
 
 ---
 
