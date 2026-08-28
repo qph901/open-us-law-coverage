@@ -64,17 +64,25 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
   content or citation. The reader stays row-group-bounded, so a full-snapshot
   pass is safe on the 11 GB federal regulations `text` column. Run:
   `uv run pytest`.
-- **M1A.5 — shared derived-artifact foundation: scaffolded.** The
-  interpretation-layer contracts in
+- **M1A.5 — shared derived-artifact foundation: closed, with concrete identity
+  producers.** The interpretation-layer contracts in
   [`src/open_us_law_coverage/derived/`](src/open_us_law_coverage/derived/):
   `DerivedArtifactProvenance` as a multi-input DAG (content-addressed
-  `artifact_id`, `generated_at` excluded), `SourceIdentityAnnotation` (groups
-  only, never composes), and the first producers — deterministic
-  `DocumentClassificationAnnotation`, `duplicate_row`-only `QualityAnnotation`,
-  and `trivial_single_record_v1` `SourceDocumentAssembly`. The headline
-  **durable-FK test** proves identity/assembly v1↔v2 coexist over the same
-  records and no artifact is keyed by `source_identity_key`. Concrete identity
-  strategies and the CFR multi-row composer land later (CFR path).
+  `artifact_id`, `generated_at` excluded) **plus a `payload_hash` semantic content
+  address and the equal-id/unequal-payload tripwire**; identity as a
+  `SourceIdentityGroup` (content-addressed by the complete member set) + per-member
+  `SourceIdentityMemberAnnotation` (the `DuplicateScope` analogue — groups only,
+  never composes); deterministic `DocumentClassificationAnnotation`,
+  `duplicate_row`-only `QualityAnnotation`, and `trivial_single_record_v2`
+  `SourceDocumentAssembly`. Every model rejects malformed direct construction.
+  The **concrete `SourceIdentityStrategy` producers** are built
+  (`usc_act_id_v1` / `state_statute_act_id_v1` / `constitution_act_id_v1` and the
+  regulations collision strategies `cfr_identity_v1` / `federal_register_document_v1`),
+  and the headline **durable-FK test** runs against real producer outputs
+  (v1↔v2 coexist over the same records; a membership change re-hashes the group and
+  every member; no artifact keyed by `source_identity_key`). Full-snapshot identity
+  manifest at [reports/M1A5_identity_manifest.md](reports/M1A5_identity_manifest.md).
+  The CFR multi-row *composer* (`cfr_source_assembly_v1`) lands in CFR-A2.
 - **M0.5B2 — Hierarchy stress test: complete.** Report at
   [reports/M0.5B2_hierarchy.md](reports/M0.5B2_hierarchy.md). A single
   `breadcrumb`-driven parser normalizes CA statutes (variable code/division/part/
@@ -133,8 +141,11 @@ The recon harness accepts any file glob, so it can be pointed at the full
 - `src/open_us_law_coverage/source_record.py` — M1A immutable
   `CanonicalSourceRecord` core (lossless serializer + boundary-enforcing model).
 - `src/open_us_law_coverage/derived/` — M1A.5 shared derived-artifact foundation
-  (provenance DAG + identity/classification/quality/assembly contracts and their
-  first producers).
+  (provenance DAG + `payload_hash`; identity group/member, classification, quality,
+  assembly contracts; and the concrete identity-strategy producers in
+  `identity_strategies.py`).
+- `src/open_us_law_coverage/identity_manifest.py` — M1A.5 C.3 deterministic
+  full-snapshot identity manifest (DuckDB-streamed; real producers over every file).
 - `src/open_us_law_coverage/hierarchy.py` — M0.5B2 hierarchy stress test
   (breadcrumb → normalized `HierarchyNode[]` / `StructuralPath` + topology report).
 - `src/open_us_law_coverage/ca_probe.py` — M0.5B3 CA abstraction-falsification

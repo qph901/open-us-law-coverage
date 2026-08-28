@@ -14,17 +14,25 @@ design decisions.** Milestone status lives in `README.md`. As of this writing M0
 reconnaissance), M0.5A (identity-collision analysis), M0.5A.1 (collision-provenance +
 segment-order spike), and **M1A (the immutable `CanonicalSourceRecord` core)** are complete;
 the source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1.
-**M1A.5** (the shared derived-artifact foundation) is **scaffolded** — the `DerivedArtifactProvenance`
-multi-input DAG + `SourceIdentityAnnotation`(shape) + `DocumentClassificationAnnotation`(deterministic)
-+ `QualityAnnotation`(duplicate-only) + `SourceDocumentAssembly`(`trivial_single_record_v2`) + the
-durable-FK test all live in `src/open_us_law_coverage/derived/`; the concrete `SourceIdentityStrategy`
-producers and the CFR multi-row composer are **not** built yet. **M0.5B2** (hierarchy stress test) and
+**M1A.5** (the shared derived-artifact foundation) is **closed** (NEXT.md Phases A–C) — the
+`DerivedArtifactProvenance` multi-input DAG **+ a `payload_hash` semantic content address and the
+equal-id/unequal-payload tripwire (D2)** + identity as a **`SourceIdentityGroup`(complete member set)
++ per-member `SourceIdentityMemberAnnotation` (D1, the `DuplicateScope` analogue)** +
+`DocumentClassificationAnnotation`(deterministic) + `QualityAnnotation`(duplicate-only) +
+`SourceDocumentAssembly`(`trivial_single_record_v2`) all live in `src/open_us_law_coverage/derived/`,
+every model rejecting malformed direct construction. The concrete **`SourceIdentityStrategy` producers
+are built** (`identity_strategies.py`: `usc_act_id_v1`/`state_statute_act_id_v1`/`constitution_act_id_v1`
+1:1, and the regulations collision strategies `cfr_identity_v1`/`federal_register_document_v1`/`state_regulation_v1`
+routed by `act_id` namespace), the durable-FK test runs against **real producer outputs**, and the
+full-snapshot identity manifest (`identity_manifest.py` → `reports/M1A5_identity_manifest.md`) is the
+scale evidence + next-snapshot regression fixture. Only the CFR multi-row *composer* (`cfr_source_assembly_v1`)
+is **not** built yet (CFR-A2). **M0.5B2** (hierarchy stress test) and
 **M0.5B3** (CA abstraction-falsification probe) are **complete** (`reports/M0.5B2_hierarchy.md`,
 `reports/M0.5B3_ca_abstraction.md`; B3 forced **zero interface changes** to the built types — captured
 two producer/taxonomy notes: `duplicate_row` scopes to the identity group, and anatomy must carry a
-history bracket + not trust `act_status`). Remaining before the M1B semantic freeze: the concrete
-identity strategies, the **CFR assembly layer** (CFR-A1 eCFR-validated commissioning → CFR-A2
-`cfr_source_assembly_v1` — needs human-staged edition-pinned eCFR), and **M0.5B1** anatomy (needs
+history bracket + not trust `act_status`). Remaining before the M1B semantic freeze: the **CFR assembly
+layer** (CFR-A1 eCFR-validated commissioning → CFR-A2 `cfr_source_assembly_v1` — needs human-staged
+edition-pinned eCFR; the concrete identity strategies it consumes are **built**), and **M0.5B1** anatomy (needs
 edition-pinned USLM — B3 deferred full anatomy falsification to it), then M1B → M0.5C. Assembly precedes
 anatomy in the layer order; interfaces co-land in M1A.5 but the assembly *producer* runs after identity
 groups the members (see PROPOSAL.md "Settled architecture", "Milestones", "Design decisions", and
@@ -44,9 +52,13 @@ uv run python -m open_us_law_coverage.snapshot_diff --old <old.parquet> --new <n
 The dataset is **gated** on Hugging Face; downloads need `HF_TOKEN` (a gated-repo read token) in the
 environment. `scripts/download.py` reads it from the env, **pins to an immutable dataset revision**
 (M1A.5 review P3 — a moving ref like `main` could certify newer bytes under an older snapshot label),
-and verifies every file (streamed, not `read_bytes`) against the snapshot's `SHA256SUMS.json`, writing
-the resolved revision to `data/<snapshot>/DOWNLOAD_METADATA.json`. Map the label in
-`SNAPSHOT_REVISIONS` or pass an immutable `--revision`:
+and verifies every file (streamed, not `read_bytes`) against the snapshot's `SHA256SUMS.json` —
+**a staged file absent from the manifest is a failure, and `DOWNLOAD_METADATA.json` is written only after
+every checksum passes** (NEXT.md D4/C.1). The **pin is established by checksum, never by transcribing a
+commit prefix** (D4): `find_matching_revision` adopts the revision whose `SHA256SUMS.json` matches the
+sha256 of every staged file. `SNAPSHOT_REVISIONS["v2026.08"]` is pinned to
+`16bc9a159faabea4af9db08f1b33832e80e85b2d` (the dataset's single commit, matched against all 229 staged
+files). Map the label in `SNAPSHOT_REVISIONS` or pass an immutable `--revision`:
 
 ```bash
 HF_TOKEN=hf_... uv run python scripts/download.py \
@@ -178,11 +190,27 @@ emit Markdown; neither has runtime dependencies on the other:
   status/text matrix** holds (`complete`/`partial` ⇒ non-null returnable text; `noncomposable`/`ambiguous`
   ⇒ null text; hash follows text). The assembly is content-addressed by its physical members and carries
   **no `source_identity_key`** — the mutable key + `legal_id` live on a separate versioned
-  `AssemblyIdentityAssociation` via `associate_assembly_with_identity`, so key A/B point at one assembly id. Closed vocabularies are `enum.StrEnum` (3.12). `SourceIdentityAnnotation`
-  (`identity.py`) is the shape only — it **groups/characterizes, never composes**; concrete strategies
-  (`usc_act_id_v1`/`cfr_identity_v1`/…) and the CFR multi-row composer (`cfr_source_assembly_v1`) land
-  in the CFR path, not here. Duck-typed on `.source_record_id`/`.column('act_id')`, so `derived/` has
-  **no runtime import** of the immutable core.
+  `AssemblyIdentityAssociation` via `associate_assembly_with_identity`, so key A/B point at one assembly id. Closed vocabularies are `enum.StrEnum` (3.12).
+  **Identity is a content-addressed group + per-member annotations** (`identity.py`, NEXT.md D1): `SourceIdentityGroup`
+  (keyed by the complete member set) + `SourceIdentityMemberAnnotation` (names `[group, this record]`; the
+  scalar segment fields — fingerprint/ordinal/method/confidence — bind to the member, never the group) —
+  the `DuplicateScope` analogue; it **groups/characterizes, never composes**. **Every derived artifact also
+  carries a `payload_hash`** (`provenance.py`, NEXT.md D2): the semantic content address, orthogonal to the
+  derivation-address `artifact_id`, validated in `__post_init__`; `check_payload_collisions` is the
+  equal-id/unequal-payload tripwire. The **concrete strategies are built** in `identity_strategies.py`:
+  `usc_act_id_v1`/`state_statute_act_id_v1`/`constitution_act_id_v1` (1:1, via `resolve_single_record_identity`)
+  and the regulations collision strategies `cfr_identity_v1`/`federal_register_document_v1`/`state_regulation_v1`
+  (routed by `act_id` namespace via `regulations_identity_group`; they take a lightweight `IdentityMember`
+  view — no `raw_text` — so a full-file scan stays row-group-bounded). Only the CFR multi-row *composer*
+  (`cfr_source_assembly_v1`) is still deferred (CFR-A2). Duck-typed on `.source_record_id`/`.column('act_id')`,
+  so `derived/` has **no runtime import** of the immutable core.
+- `src/open_us_law_coverage/identity_manifest.py` → `reports/M1A5_identity_manifest.md` (M1A.5 C.3). The
+  deterministic full-snapshot identity manifest — scale evidence + next-snapshot regression fixture. **DuckDB**,
+  not pyarrow (the OOM invariant below): `COUNT(*) GROUP BY act_id` sizes every file; `md5(text)` + `SEMI JOIN`
+  streams out only the colliding rows (spilling under `--memory-limit`), which feed the real collision producers
+  + `detect_duplicate_rows` within each group. It measured that `act_id` collisions are a **regulations**
+  phenomenon and **not federal-only** (state administrative codes collide — the reason `state_regulation_v1`
+  exists). Byte-stable; regenerate with `--memory-limit 4GB --temp-dir <scratch>`.
 - `src/open_us_law_coverage/hierarchy.py` → `reports/M0.5B2_hierarchy.md` + `tests/test_hierarchy.py`
   (M0.5B2). Both a tested parser and a report harness. `parse_breadcrumb(breadcrumb_json)` is the pure
   core — it turns the `breadcrumb` JSON array (`{type,num,label,name}`, root→leaf) into a normalized
@@ -229,7 +257,10 @@ the point:
   inference). **Never** compute `legal_id = hash(canonical_citation)`; citation is a resolvable
   alias, not identity. Enforce `act_id` uniqueness on `(state, corpus, act_id)` — `jurisdiction` is
   uniformly `"US"`; `state` is the real discriminator. (M0 finding: `act_id` is 100% populated
-  everywhere but **not unique within the federal regulations file** — a Tier-1 caveat.)
+  everywhere but **not unique within the regulations corpora** — a Tier-1 caveat. The M1A.5 C.3
+  full-snapshot manifest (`reports/M1A5_identity_manifest.md`) measured it: collisions are a
+  *regulations* phenomenon and **not federal-only** — `us_federal_regulations` (CFR + FR) plus several
+  **state** administrative-code files repeat an `act_id`; everything else is 1:1.)
 - **Deterministic-first, and abstain rather than guess.** An explicit `unresolved`/`ambiguous`
   result beats a confidently wrong edge; `external` (correctly out-of-corpus) is a *success*, kept
   distinct in metrics. A rule-derived edge and an LLM-derived edge must never be indistinguishable in

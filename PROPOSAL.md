@@ -9,11 +9,11 @@ The guiding rule for the whole system: **uncertainty about legal identity must b
 The architecture that serves that rule is a **two-layer source/interpretation split**:
 
 - **CanonicalSourceRecord** — what the dataset told us. Lossless, immutable, zero legal interpretation of ours.
-- **Versioned derived annotations** — what our parsers *believe*, separated from the source by an explicit versioned boundary: `SourceIdentityAnnotation`, `DocumentClassificationAnnotation`, `QualityAnnotation`, `SourceDocumentAssembly`, `DocumentAnatomy`, `HierarchyTree`, and (downstream) `CanonicalLegalDocument` / `LegalChunk` / `CitationEdge` / `LineageEdge`.
+- **Versioned derived annotations** — what our parsers *believe*, separated from the source by an explicit versioned boundary: `SourceIdentityGroup` (+ member annotations), `DocumentClassificationAnnotation`, `QualityAnnotation`, `SourceDocumentAssembly`, `DocumentAnatomy`, `HierarchyTree`, and (downstream) `CanonicalLegalDocument` / `LegalChunk` / `CitationEdge` / `LineageEdge`.
 
 Every annotation carries its own `DerivedArtifactProvenance` (a multi-input DAG — see Data contracts) and can be regenerated without ever rewriting the source record. This gives uncertainty an explicit home and lets parsers improve without churning provenance.
 
-**Status:** M0 (reconnaissance), **M0.5A (identity-collision analysis)**, **M0.5A.1 (collision-provenance + segment-order spike)**, and **M1A (the immutable `CanonicalSourceRecord` core)** are **complete** — see `reports/M0_recon.md`, `reports/M0_full_snapshot.md`, `reports/M0_act_id_stability.md`, `reports/M0.5A_identity_collisions.md`, `reports/M0.5A1_segment_provenance.md`, and `src/open_us_law_coverage/source_record.py`. The source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1. The next build phase is **M1A.5** (the shared derived-artifact foundation: multi-input provenance DAG + `SourceIdentityAnnotation` / `DocumentClassificationAnnotation` / `QualityAnnotation` / `SourceDocumentAssembly`), the **CFR assembly layer** (CFR-A1 commissioning → CFR-A2 producer), and the **M0.5B** spikes (parallel), ending at the **M1B** semantic freeze → **M0.5C** (disposition extraction). This document is the single source of truth; it carries the design decisions converged during review — including the M1A.5/CFR/M0.5B review that folded assembly into the identity boundary — and supersedes any earlier sequencing and any one-record `ingest → CanonicalLegalDocument` framing. **One architecture only.**
+**Status:** M0 (reconnaissance), **M0.5A/M0.5A.1**, **M1A (the immutable `CanonicalSourceRecord` core)**, **M0.5B2/M0.5B3**, and **M1A.5 (the shared derived-artifact foundation — now CLOSED, NEXT.md Phases A–C: corrected+frozen contracts with `payload_hash`/D2 and the `SourceIdentityGroup`+member/D1 shape, the concrete `SourceIdentityStrategy` producers built, evidence recommissioned incl. `reports/M1A5_identity_manifest.md`)** are **complete** — see the reports under `reports/` and `src/open_us_law_coverage/`. The source-identity contract froze with the *snapshot-observed ordinal* caveat from M0.5A.1. The next build phase is the **CFR assembly layer** (CFR-A1 commissioning → CFR-A2 `cfr_source_assembly_v1` producer — the only unbuilt derived producer) and the **M0.5B1** anatomy spike (parallel), ending at the **M1B** semantic freeze → **M0.5C** (disposition extraction). This document is the single source of truth; it carries the design decisions converged during review — including the M1A.5/CFR/M0.5B review that folded assembly into the identity boundary, and the NEXT.md D1–D4 residual deltas — and supersedes any earlier sequencing and any one-record `ingest → CanonicalLegalDocument` framing. **One architecture only.**
 
 ---
 
@@ -81,7 +81,7 @@ These are settled; code that breaks them defeats the point of the project.
 
 - **Identity, content, and order are orthogonal:** `source_record_id` (physical) / `raw_text_hash` (content) / `segment_ordinal` (snapshot-observed order, non-durable) / `legal_id` (legal entity).
 - **Source vs interpretation is a versioned boundary:** source provenance is immutable; identity assignments are versioned and evidence-bearing; promoted `legal_id`s are durable references corrected **additively** (`superseded_identity` / `merged_into` / `split_into` / `alias_of` / `erroneous_assignment`), never overwritten. `legal_id` is **not** in the immutability invariant.
-- **Layer order:** `CanonicalSourceRecord[] → SourceIdentityAnnotation (group) → SourceDocumentAssembly (compose) → DocumentAnatomy (parse) → LegalDocumentView`. **Assembly precedes anatomy**; the continuation signal that composes rows is raw-text assembly evidence, not anatomy. Anatomy is an *optional validator* of a candidate assembly, never its source.
+- **Layer order:** `CanonicalSourceRecord[] → SourceIdentityGroup (+ member annotations) → SourceDocumentAssembly (compose) → DocumentAnatomy (parse) → LegalDocumentView`. **Assembly precedes anatomy**; the continuation signal that composes rows is raw-text assembly evidence, not anatomy. Anatomy is an *optional validator* of a candidate assembly, never its source.
 - **Oracles are build-time only:** USLM (anatomy) and eCFR (CFR assembly) are at most edition-pinned **build-time** oracles, recorded as provenance inputs — never query-runtime dependencies.
 - **Never deduplicate `CanonicalSourceRecord`.** Duplicates stay in the immutable core; annotations/assembly record the relationship and pick one copy for semantic text.
 
@@ -95,7 +95,7 @@ CanonicalSourceRecord            ← immutable / lossless (raw_text + 24 source 
 ── versioned parser boundary ──────────────
         │
 versioned derived annotations
-   ├── SourceIdentityAnnotation        (group/characterize only; fed by M0.5A.1)
+   ├── SourceIdentityGroup (+ member)   (group/characterize only; fed by M0.5A.1)
    ├── DocumentClassificationAnnotation
    ├── QualityAnnotation               (first producer: duplicate_row only)
    ├── SourceDocumentAssembly          (compose members of an identity group → assembled_text)
@@ -133,7 +133,7 @@ RAG (LATER)
 | `segment_ordinal` | in what observed order was this row presented? | ordering annotation | observational; may be snapshot-only |
 | `legal_id` | which stable legal/source object? | derived, established later | cross-snapshot where continuity is supported |
 
-`source_identity_key` is **our current interpretation** of how source fields jointly identify an object → it lives in `SourceIdentityAnnotation`, never in the immutable core, and never as a durable foreign key (see the durable-FK rule). The earlier `document_id`/`version_id` framing is subsumed: the snapshot-local physical address is now `source_record_id`; durable references anchor to it, not to a separate document address.
+`source_identity_key` is **our current interpretation** of how source fields jointly identify an object → it lives on the `SourceIdentityGroup`, never in the immutable core, and never as a durable foreign key (see the durable-FK rule). The earlier `document_id`/`version_id` framing is subsumed: the snapshot-local physical address is now `source_record_id`; durable references anchor to it, not to a separate document address.
 
 ### Stability tiers (how `legal_id` is assigned)
 
@@ -147,7 +147,7 @@ RAG (LATER)
 The federal-regulation `act_id` collision proves bare `act_id` is not a universal key. Identity resolution goes through a versioned strategy, never a hardcoded key:
 
 ```
-SourceIdentityStrategy          # one per corpus, versioned; emits into SourceIdentityAnnotation
+SourceIdentityStrategy          # one per corpus, versioned; emits a SourceIdentityGroup + member annotations
     identity_key(record)      -> source_identity_key
     namespace(record)         -> namespace tuple
     stability_class(record)   -> proven | snapshot_local | unknown
@@ -205,22 +205,39 @@ producer_version      # a.k.a. parser_version
 config_hash           # a.k.a. parser_config_hash
 generated_at       # audit metadata only; never in artifact_id
 ```
-Every artifact anchors durable references to `source_record_id` (via an `inputs[]` edge of type `source_record`), **never** to `source_identity_key`. The **sorted-input-set** hash means two artifacts over different member sets never collide, and the DAG makes the recompute frontier on a new snapshot **computable** — recompute exactly the artifacts whose input set changed. A per-record annotation is simply the single-input case (`inputs = [that one source_record]`); a build-time oracle (USLM/eCFR edition) enters as an `oracle_edition` input, so `operative_text_hash`/`assembled_text_hash` honor the full-input reproducibility contract. Excluding `generated_at` from `artifact_id` keeps the id content-addressed (a byte-identical recompute yields the same id). Stored `inputs[]` are **canonicalized (sorted) as well as hashed sorted** (M1A.5 review P1), so equal `artifact_id` ⇒ byte-identical serialized object — reversing the inputs produces the same object, not merely the same id; callers needing input-order correspondence keep it in a separate list (e.g. the per-member quality annotations beside a `DuplicateScope`). `DocumentAnatomy`, `HierarchyTree`, `LegalChunk`, `ReferenceMention`, `LineageMention`, and `SourceDocumentAssembly` all follow this model rather than inventing their own.
+Every artifact anchors durable references to `source_record_id` (via an `inputs[]` edge of type `source_record`), **never** to `source_identity_key`. The **sorted-input-set** hash means two artifacts over different member sets never collide, and the DAG makes the recompute frontier on a new snapshot **computable** — recompute exactly the artifacts whose input set changed. A per-record annotation is simply the single-input case (`inputs = [that one source_record]`); a build-time oracle (USLM/eCFR edition) enters as an `oracle_edition` input, so `operative_text_hash`/`assembled_text_hash` honor the full-input reproducibility contract. Excluding `generated_at` from `artifact_id` keeps the id content-addressed (a byte-identical recompute yields the same id). Stored `inputs[]` are **canonicalized (sorted) as well as hashed sorted** (M1A.5 review P1), so reversing the inputs produces the same object, not merely the same id; callers needing input-order correspondence keep it in a separate list (e.g. the per-member quality annotations beside a `DuplicateScope`). `DocumentAnatomy`, `HierarchyTree`, `LegalChunk`, `ReferenceMention`, `LineageMention`, and `SourceDocumentAssembly` all follow this model rather than inventing their own.
 
-### `SourceIdentityAnnotation` — versioned; groups/characterizes only, never composes (fed by M0.5A.1)
+**`payload_hash` — the semantic content address, kept orthogonal to `artifact_id` (NEXT.md D2).** `artifact_id` is a *derivation* address: it hashes `(type, inputs, producer, version, config)` and is pre-computable before the body exists — that is exactly what the recompute frontier relies on, so the semantic body must **not** be folded into it. But the derivation→body guarantee is only as good as release discipline (a deterministic producer whose code changes without a version bump, or an output-affecting knob not folded into `config_hash`, silently emits a new body under the old id). So every derived artifact carries a **`payload_hash`**: the canonical hash of its semantic conclusion fields (audit-only metadata — `generated_at` — excluded), validated in `__post_init__` against the body. This mirrors the M1A house rule that keeps `source_record_id` (physical/derivation) orthogonal to `raw_text_hash` (content). **Tripwire invariant:** any store or test that observes two artifacts with equal `artifact_id` and unequal `payload_hash` **raises** — the "unbumped producer change" surfaced as an error instead of a silent overwrite. The corrected guarantee: *equal `artifact_id` ⇒ equal `(inputs, producer, version, config)`; equal `payload_hash` ⇒ equal canonical semantic payload; a well-governed store never holds two payloads under one `artifact_id`.*
+
+### `SourceIdentityGroup` + `SourceIdentityMemberAnnotation` — versioned; group/characterize only, never compose (fed by M0.5A.1)
+
+**Explicit content-addressed group + per-member annotations (NEXT.md D1 — the `DuplicateScope` analogue).** An earlier shorthand modelled identity as one multi-member `SourceIdentityAnnotation` carrying *scalar* segment fields (`segment_fingerprint`, `segment_ordinal`) on the group object. That is withdrawn: a lone scalar segment on a multi-member object is unbound (which member is it about?), and grouping members through a *mutable* `source_identity_key` with no group artifact reintroduces the exact incomplete-recompute-frontier bug `DuplicateScope` was built to fix (add/remove a sibling and the existing per-member conclusions do not re-hash). The faithful analogue is a **group artifact + per-member annotations**:
 ```
-(DerivedArtifactProvenance)          # inputs = member source_record_ids
-strategy_name          # usc_act_id_v1 | state_statute_act_id_v1 |
-                       #   cfr_identity_v1 | federal_register_document_v1
-source_identity_key
-member_source_record_ids[]   # the candidate group; may be a single record
-segment_fingerprint    # content-addressed; (act_id, raw_text_hash, occurrence_index)
-segment_ordinal        # + segment_order_method, segment_order_confidence (snapshot_observed)
-identity_scope         # record | provision | document | segment | numbering_bucket | unknown
-identity_status        # resolved | ambiguous | provisional | unsupported
-confidence
-evidence[]
+SourceIdentityGroup                  # content-addressed by the COMPLETE member set
+  (DerivedArtifactProvenance)        #   artifact_type = source_identity_group;
+                                     #   inputs = sorted source_record edges of every member
+  strategy_name          # usc_act_id_v1 | state_statute_act_id_v1 |
+                         #   cfr_identity_v1 | federal_register_document_v1
+  source_identity_key
+  member_source_record_ids[]   # the complete candidate group (sorted, unique); may be one record
+  identity_scope         # record | provision | document | segment | numbering_bucket | unknown
+  identity_status        # resolved | ambiguous | provisional | unsupported
+  confidence
+  payload_hash           # (D2)
+  evidence[]
+
+SourceIdentityMemberAnnotation       # one per member (mirrors per-member QualityAnnotation)
+  (DerivedArtifactProvenance)        #   inputs = [SourceIdentityGroup artifact, this source_record]
+  target_source_record_id      # the one member this annotation is about
+  segment_fingerprint    # bound to THIS member; content-addressed (act_id, raw_text_hash, occurrence_index)
+  segment_ordinal        # snapshot-observed physical row order (M0.5A.1)
+  segment_order_method   # physical_row_order | single_record | unknown
+  segment_order_confidence   # snapshot_observed | source_defined | not_applicable
+  payload_hash           # (D2)
+  evidence[]
 ```
+Add `source_identity_group` to `ArtifactType`. **The 1:1 case is the degenerate instance:** a single-member group (`single_record`, `not_applicable`) with one member annotation — the scalar segment fields never again sit unbound on a multi-member object. Changing a group member re-hashes the `SourceIdentityGroup` id **and** every affected `SourceIdentityMemberAnnotation` (the recompute frontier is complete), exactly as a sibling change re-hashes a `DuplicateScope` and its members.
+
 **Identity groups and characterizes; it does not compose.** Identity may conclude "R1/R2/R3 appear related, candidate = CFR §X" but must **not** decide "append R2 after R1" — that composition decision is `SourceDocumentAssembly`. Correct abstention is success; **100% identity coverage is not a metric**.
 Note on `segment_fingerprint`: the only place ordering re-enters is `occurrence_index` disambiguating byte-identical duplicate rows. That is harmless — such rows carry `duplicate_row` and are semantically interchangeable, so the index is losslessness bookkeeping, never a semantic distinction.
 
@@ -281,8 +298,8 @@ Assembly is the layer that *composes* the member records of an identity group in
 - **Eligibility invariant (M1A.5 review P1): `assembly_status == complete` ⇒ a non-null, returnable `assembled_text`.** A **null** source body is `noncomposable` (nothing to return); an empty string `""` is a valid *complete* empty provision. Every stored field is a deterministic function of the declared inputs, enforced by model invariants (M1A.5 review P2): parallel member/role/operation lengths; the provenance `artifact_type` is `source_document_assembly` and its source-record inputs equal the assembly members; the **full status/text matrix** (`complete`/`partial` ⇒ non-null returnable text, `noncomposable`/`ambiguous` ⇒ null text) with the hash following the text; and `confidence ∈ [0,1]`.
 - The **plan/assembly split was cut** (decision A/D): operations, member roles, evidence, confidence, and status live as fields *on* `SourceDocumentAssembly`. There was no "validate the plan before materializing" step to hang a second artifact on — the anatomy validator runs on the materialized candidate text, not on a plan. If a human-in-the-loop approval workflow ever appears, re-splitting is trivial because the fields already exist.
 
-### Durable-FK test (ships with `SourceIdentityAnnotation`)
-Assert: identity strategy v1 (key A) and v2 (key B) coexist over the same records; downstream provenance referencing those records stays valid; no immutable artifact is keyed by `source_identity_key`. Because the key lives only on the separate `AssemblyIdentityAssociation`, key A and key B associate with the **same** assembly `artifact_id` without changing the assembly body. Extend the same coexistence test to assembly v1/v2 over the same members.
+### Durable-FK test (ships with the identity-group shape)
+Assert: identity strategy v1 (key A) and v2 (key B) coexist over the same records; downstream provenance referencing those records stays valid; no immutable artifact is keyed by `source_identity_key`. Because the key lives only on the separate `AssemblyIdentityAssociation`, key A and key B associate with the **same** assembly `artifact_id` without changing the assembly body. Extend the same coexistence test to assembly v1/v2 over the same members, and add the D1 recompute-frontier property: **a membership change re-hashes the `SourceIdentityGroup` and every affected `SourceIdentityMemberAnnotation`.** The durable-FK suite graduates from fabricated annotations to **actual producer outputs** once the concrete strategies exist (NEXT.md B.3).
 
 ---
 
@@ -487,15 +504,19 @@ Because the immutable core contains zero interpretation, it did not wait on A.1.
 **Exit (golden-fixture invariants) — all passing** (`uv run pytest`, 21 tests in `tests/test_source_record.py` over a hermetic multi-row-group synthetic fixture + the committed AK-constitutions sample): no text lost; every column preserved verbatim (null stays null, never invented); `source_record_id` deterministic from `(snapshot_version, source_file_checksum, physical_row_ordinal)` and independent of content; `raw_text[start:end]` resolves for stored offsets (incl. multibyte unicode); and the **boundary test** passes — a simulated "identity/anatomy/hierarchy/quality parser improved" (two producer generations emitting materially different annotations) requires **zero** changes to any `CanonicalSourceRecord`, and the records are immutable (mutation raises).
 The annotation layer starts after its inputs exist: `SourceIdentityAnnotation` after A.1 (now unblocked); `DocumentClassificationAnnotation` and `QualityAnnotation` can begin immediately (their producers are versioned and regenerable regardless).
 
-### M1A.5 — shared derived-artifact foundation
-Build the shared derived-artifact contracts once, so every downstream annotation inherits provenance and the durable-FK discipline instead of re-inventing them. Deliverables:
-- **`DerivedArtifactProvenance` as a multi-input DAG** (`artifact_id = hash(sorted(input_ids), artifact_type, producer_name, producer_version, config_hash)`, `generated_at` excluded; `inputs[]` are the DAG edges). The DAG makes the recompute frontier on a new snapshot computable.
-- **`SourceIdentityAnnotation`** (groups/characterizes only, never composes) + the **durable-FK test** (identity strategy v1/v2 coexist over the same records; no immutable artifact keyed by `source_identity_key`; extended to assembly v1/v2).
-- **`DocumentClassificationAnnotation`** — the near-deterministic first producer (`CFR_*` → codified_cfr/operative_primary_law; `FR_*` → federal_register/promulgation_record), and test the retrieval-policy consequence (FR default OFF for present-law/exact-CFR resolution).
+### M1A.5 — shared derived-artifact foundation *(CLOSED — NEXT.md Phases A–C)*
+Build the shared derived-artifact contracts once, so every downstream annotation inherits provenance and the durable-FK discipline instead of re-inventing them. **Closed (`NEXT.md`, 2026-08-28): the contracts were corrected and frozen (Phase A), the concrete producers built on them (Phase B), and the evidence recommissioned (Phase C) — in that order (D3), because the shapes had persisted no artifacts, so correcting them was a design edit, not a migration.** Deliverables:
+- **`DerivedArtifactProvenance` as a multi-input DAG** (`artifact_id = hash(sorted(input_ids), artifact_type, producer_name, producer_version, config_hash)`, `generated_at` excluded; `inputs[]` are the DAG edges) **+ a `payload_hash` semantic content address on every derived artifact and the equal-id/unequal-payload tripwire** (D2). The DAG makes the recompute frontier on a new snapshot computable.
+- **`SourceIdentityGroup` + `SourceIdentityMemberAnnotation`** (D1 — content-addressed group + per-member annotations, the `DuplicateScope` analogue; groups/characterizes only, never composes) + the **durable-FK test** (identity strategy v1/v2 coexist over the same records; no immutable artifact keyed by `source_identity_key`; a membership change re-hashes the group and every affected member; extended to assembly v1/v2 — graduated to real producer outputs in B.3).
+- **`DocumentClassificationAnnotation`** — the near-deterministic first producer (broad class from the 100%-populated `document_type` column, `act_id` prefix only refining `CFR_*`→codified_cfr vs `FR_*`→federal_register), and test the retrieval-policy consequence (FR default OFF for present-law/exact-CFR resolution).
 - **`QualityAnnotation`** — first producer `duplicate_row` only (contamination detector deferred).
-- **`SourceDocumentAssembly`** interface + the `trivial_single_record_v1` producer (one member, `KEEP`, `complete`, `assembled_text = raw_text`) so the 99% one-row case is covered immediately. `legal_id` attaches to the assembly, not the row.
+- **`SourceDocumentAssembly`** interface + the `trivial_single_record_v2` producer (one member, `KEEP`, `assembled_text = raw_text`; null text → `noncomposable`) so the 99% one-row case is covered immediately. `legal_id` attaches to the assembly (via `AssemblyIdentityAssociation`), not the row. **Producer versions are module constants, not caller-controlled** (NEXT.md A.5).
 
-**Exit:** the durable-FK coexistence test passes; the deterministic classification producer and the trivial-assembly producer run over the frozen M1A core; every artifact carries a well-formed provenance DAG; no durable FK anchors to `source_identity_key`.
+**Exit — met.** Every derived model rejects malformed direct construction (uniform `__post_init__` validation) with a consistent `payload_hash`; the equal-id/unequal-payload tripwire fires; the durable-FK coexistence + recompute-frontier tests pass against **real** producer outputs; every artifact carries a well-formed provenance DAG; no durable FK anchors to `source_identity_key`.
+
+**Built (Phase B), in `src/open_us_law_coverage/derived/identity_strategies.py`:** the 1:1 strategies `usc_act_id_v1` / `state_statute_act_id_v1` / `constitution_act_id_v1` (each a single-member group, `resolved`, `single_record`), and the regulations collision strategies `cfr_identity_v1` (provisional multi-segment) / `federal_register_document_v1` (ambiguous numbering-bucket, never composed) / `state_regulation_v1` — routed by `act_id` namespace via `regulations_identity_group`. The 1:1 chain `CanonicalSourceRecord → identity → trivial assembly` runs byte-for-byte over a real corpus.
+
+**Evidence (Phase C).** The snapshot pin is established **by checksum** (D4 — `SNAPSHOT_REVISIONS["v2026.08"]` matches all 229 staged files' sha256), the CA probe re-runs on the real producers (`reports/M0.5B3_ca_abstraction.md`), and the **full-snapshot identity manifest** (`src/open_us_law_coverage/identity_manifest.py` → `reports/M1A5_identity_manifest.md`) is the scale evidence + next-snapshot regression fixture. It measured that `act_id` collisions are a **regulations** phenomenon and **not federal-only** (state administrative-code files collide too — hence `state_regulation_v1`); 94% of ~2.8M groups are single-member 1:1; multi-row CFR is **1,083 groups** (consistent with decision B); FR is 165k ambiguous groups; max group size 14.
 
 ### CFR-A1 — CFR assembly commissioning spike
 Bounded (a deterministic sample, ~a few hundred groups — *not* a milestone). Cover the hard cases: byte-identical duplicates; obvious two-row continuations; >2-row groups; distinct co-numbered rows with no continuation; list/table boundaries; punctuation edge cases; partial/full variants. Validate the proposed assembly against **snapshot-aligned eCFR** (a build-time oracle).
@@ -527,7 +548,7 @@ Not "run USC heuristics on CA" — parser rules are *expected* to be corpus-spec
 **Rule adopted — universal artifact model, corpus-specific producers:** *a parser implementation may be corpus-specific; the artifact interfaces must survive both USC and California.*
 **Exit:** a list of type/interface changes CA forces (or confirmation none are needed) — captured **before** M1B freezes interfaces.
 
-**M0.5B3 — COMPLETE (for the built types).** Report at `reports/M0.5B3_ca_abstraction.md`, built by `open_us_law_coverage.ca_probe` (streams the full 161,566-row CA statutes file row-group-bounded, runs every built producer over it). Result: **zero interface changes to any built artifact type.** `DerivedArtifactProvenance`, `SourceIdentityAnnotation` (CA `act_id` 100% unique → single-member groups), `DocumentClassificationAnnotation` (`STATE_*` → statute), `HierarchyNode[]` (variable code/division/part/title/article ordering, `appendix`, non-numeric ids like `73c` / `GENERAL PROVISIONS` — all carried as strings), the newly-defined **`StructuralPath`** (bare leaf id is ambiguous but the absolute path is 1:1 — distinct paths == rows), and `SourceDocumentAssembly` (`trivial_single_record_v1`, CA is 1:1) all represent CA without distortion. Two requirements captured as **producer/taxonomy notes, not type changes**: (1) **`duplicate_row` must be scoped to the identity group, not the corpus** — CA has 2,689 text hashes (7,642 rows) byte-identical across *distinct* provisions (`[Repealed]`/`[Reserved]` stubs, re-used boilerplate); `duplicate_row` means "same bytes," never "same `legal_id`", and within an identity group CA yields 0; (2) **anatomy (B1) must carry a leading history/source-credit bracket and must not trust `act_status`** — CA `repealed`-status rows commonly hold a `[Repealed … and added by Stats. …]` bracket *followed by operative text*, so anatomy reads the text; the `AnatomySpan(start,end,label,source,confidence)` shape suffices, only the label taxonomy needs the disposition-bracket category. **Full anatomy falsification is deferred to M0.5B1** (blocked on USLM) — a standing input, not a resolved result. Net: M1B is not blocked by California.
+**M0.5B3 — COMPLETE (for the built types).** Report at `reports/M0.5B3_ca_abstraction.md`, built by `open_us_law_coverage.ca_probe` (streams the full 161,566-row CA statutes file row-group-bounded, runs every built producer over it). Result: **zero interface changes to any built artifact type.** `DerivedArtifactProvenance`, `SourceIdentityGroup` + `SourceIdentityMemberAnnotation` (CA `act_id` 100% unique → single-member groups), `DocumentClassificationAnnotation` (`STATE_*` → statute), `HierarchyNode[]` (variable code/division/part/title/article ordering, `appendix`, non-numeric ids like `73c` / `GENERAL PROVISIONS` — all carried as strings), the newly-defined **`StructuralPath`** (bare leaf id is ambiguous but the absolute path is 1:1 — distinct paths == rows), and `SourceDocumentAssembly` (`trivial_single_record_v2`, CA is 1:1) all represent CA without distortion. Two requirements captured as **producer/taxonomy notes, not type changes**: (1) **`duplicate_row` must be scoped to the identity group, not the corpus** — CA has 2,689 text hashes (7,642 rows) byte-identical across *distinct* provisions (`[Repealed]`/`[Reserved]` stubs, re-used boilerplate); `duplicate_row` means "same bytes," never "same `legal_id`", and within an identity group CA yields 0; (2) **anatomy (B1) must carry a leading history/source-credit bracket and must not trust `act_status`** — CA `repealed`-status rows commonly hold a `[Repealed … and added by Stats. …]` bracket *followed by operative text*, so anatomy reads the text; the `AnatomySpan(start,end,label,source,confidence)` shape suffices, only the label taxonomy needs the disposition-bracket category. **Full anatomy falsification is deferred to M0.5B1** (blocked on USLM) — a standing input, not a resolved result. Net: M1B is not blocked by California.
 
 ### M0.5C — Disposition extraction
 Consume anatomy's codification/disposition spans (not raw text) → produce **unresolved** `LineageMention`s (`relationship_type`, `raw_target_reference`, span, `extraction_method`, `extraction_confidence`, `resolution_status = unresolved`). Stop at mentions — resolving the target citation needs the alias index (M3), so M0.5C must not build half the resolver.
@@ -568,9 +589,9 @@ M0.5A.1  segment/collision-provenance spike  ── hard-gated identity contract
    │
 source-identity contract FROZEN  (snapshot-observed-ordinal caveat, after A.1)
    │
-M1A.5  DerivedArtifactProvenance(DAG) + SourceIdentityAnnotation
+M1A.5  DerivedArtifactProvenance(DAG, +payload_hash) + SourceIdentityGroup/MemberAnnotation
    │      + DocumentClassificationAnnotation + QualityAnnotation(duplicate-only)
-   │      + SourceDocumentAssembly(trivial_single_record_v1) + durable-FK test
+   │      + SourceDocumentAssembly(trivial_single_record_v2) + durable-FK test
    │
    ├── CFR path:  identity groups CFR collisions → CFR-A1 commissioning (eCFR oracle)
    │              → CFR-A2 cfr_source_assembly_v1  (eligibility invariant gates CFR retrieval)
@@ -586,7 +607,7 @@ M2 detector/parser → M3 resolver/alias index → M3.5 resolve LineageMention �
 Later: CFR resolution (consumes assembled CFR text) · State framework
 ```
 
-**Gate semantics (precise):** M0.5A.1 gated the *source-identity contract*, not raw ingestion; that contract is now frozen. The lossless M1A record serializer did not need to know how `legal_id` works. In M1A.5 the artifact *interfaces* co-land (they are independent), but the *producers* are ordered **identity-then-assembly**: the assembly producer composes over a `source_identity_key` group, so it runs after `SourceIdentityAnnotation` has grouped the CFR collision members (decision C). B and C need not block M1A.5; C must not start before B yields a trustworthy codification/disposition span. Do **not** freeze M1B until B1/B2/B3 and CFR-A1/A2 have reported.
+**Gate semantics (precise):** M0.5A.1 gated the *source-identity contract*, not raw ingestion; that contract is now frozen. The lossless M1A record serializer did not need to know how `legal_id` works. In M1A.5 the artifact *interfaces* co-land (they are independent), but the *producers* are ordered **identity-then-assembly**: the assembly producer composes over a `source_identity_key` group, so it runs after the identity strategy (`SourceIdentityGroup`) has grouped the CFR collision members (decision C). B and C need not block M1A.5; C must not start before B yields a trustworthy codification/disposition span. Do **not** freeze M1B until B1/B2/B3 and CFR-A1/A2 have reported.
 
 ---
 
@@ -598,9 +619,21 @@ A skeptical pass on the accreted design produced one cut, one scope-down, and fo
 
 **B. eCFR build-time-fallback trigger — default to pure snapshot-internal with abstention.** Only reconsider the eCFR-pinned build-time fallback if CFR-A1 abstains on **>50% of multi-row CFR groups**, and even then improve the internal heuristic first. Multi-row CFR is ~1,083 groups (~0.5% of ~220k CFR provisions), and abstention is a *safe* outcome (returns `source_url`, never partial law), so recovering a fraction of a fraction does not justify a build-time external dependency until the heuristic is demonstrably not working.
 
-**C. Identity vs assembly sequencing — interfaces co-land, producers are ordered.** The assembly *interface* lands in M1A.5 alongside identity (interfaces are independent). The assembly *producer* runs after `SourceIdentityAnnotation` has grouped the CFR collision members, since it composes over a `source_identity_key` group.
+**C. Identity vs assembly sequencing — interfaces co-land, producers are ordered.** The assembly *interface* lands in M1A.5 alongside identity (interfaces are independent). The assembly *producer* runs after the identity strategy has grouped the CFR collision members into a `SourceIdentityGroup`, since it composes over that group.
 
 **D. Over-engineering cut / deferred.** Cut the separate `SourceAssemblyPlan` (per A). Scoped `QualityAnnotation`'s first producer to `duplicate_row` only and deferred the contamination detector: assembly needs duplicate detection now; nothing at risk is being assembled yet, so the contamination producer defers until a corpus at risk is ingested.
+
+### Residual deltas resolved for M1A.5 closure (`NEXT.md`, 2026-08-28)
+
+A second review pass (six converged review docs, superseded by `NEXT.md`) settled four residual deltas. The one next milestone is **M1A.5 closure**: close the derived-layer contracts, *then* build the concrete `SourceIdentityStrategy` producers on the corrected contracts, *then* recommission the evidence — **no CFR assembly and no M1B freeze until done.** `NEXT.md` is the actionable build plan (Phases A→C); the settled decisions are folded into the contracts above.
+
+**D1 — Multi-member identity uses an explicit, content-addressed group.** The "one annotation per segment sharing a `source_identity_key`" shorthand is withdrawn (mutable-key grouping with no group artifact = the incomplete-recompute-frontier bug `DuplicateScope` fixes). Replaced by `SourceIdentityGroup` + `SourceIdentityMemberAnnotation` (see the contract above); scalar segment fields bind to a member, never to the group.
+
+**D2 — `artifact_id` stays a derivation address; a new `payload_hash` carries the semantic content address.** Neither fold-the-body-in (destroys the pre-computable derivation address) nor leave-it-alone (an unbumped producer change silently overwrites). Two ids, one job each — the M1A `source_record_id`/`raw_text_hash` house rule — plus the equal-id/unequal-payload tripwire (see the `DerivedArtifactProvenance` contract above).
+
+**D3 — Contracts freeze before any producer is written.** D1 restructures the identity shape itself, so even a 1:1 producer emits a single-member group + one member annotation and is downstream of the shape decision. The 1:1 path is the *first producer implemented*, not the *first task*.
+
+**D4 — The snapshot pin is established by checksum-matching, never by transcribing a commit prefix.** Do **not** paste the M0.5A.1 report's commit prefix into `SNAPSHOT_REVISIONS`: that commit *introduced* regulations but is not proof it is the exact revision every staged local Parquet came from. Instead, resolve candidate history to full SHAs and adopt the revision whose `SHA256SUMS.json` matches the sha256 of every staged file (the streamed checksum `download.py` already computes); if none matches all files, record the limitation explicitly and re-download from a deliberately chosen immutable revision. Also: `verify()` must treat a requested file **absent** from `SHA256SUMS.json` as a failure, and write `DOWNLOAD_METADATA.json` only after every checksum passes.
 
 ---
 
@@ -645,7 +678,7 @@ Reserve **"canonical"** for the immutable source representation. `CanonicalLegal
 1. ~~Run **M0.5A.1**~~ **DONE** — `reports/M0.5A1_segment_provenance.md`. The source-identity contract froze with the *snapshot-observed ordinal* caveat (cross-snapshot stability untestable until a second regulations snapshot; `FR_*` rows are co-numbered distinct captures, so no reading order / no valid concatenation).
 2. ~~Build the **M1A immutable core** with the boundary test in its acceptance suite~~ **DONE** — `src/open_us_law_coverage/source_record.py` + `tests/test_source_record.py` (`uv run pytest`, boundary test green).
 3. Do **not** anchor any durable artifact FK to `source_identity_key`.
-4. **Now: build M1A.5** — the `DerivedArtifactProvenance` multi-input DAG and the durable-FK test; ship the `trivial_single_record_v1` assembly producer and the deterministic `DocumentClassificationAnnotation` producer; scope `QualityAnnotation` to `duplicate_row`. `SourceIdentityAnnotation` (fed by A.1) is built on the frozen M1A core; assembly interfaces co-land with it, but the assembly *producer* runs after identity groups the members.
+4. ~~**Close M1A.5** (`NEXT.md`)~~ **DONE** — contracts corrected + frozen (D1 `SourceIdentityGroup`/`SourceIdentityMemberAnnotation`, D2 `payload_hash` + tripwire, uniform validation; D3 freeze-then-build), concrete identity producers built (`identity_strategies.py`), evidence recommissioned (checksum pin D4, CA probe re-run, `reports/M1A5_identity_manifest.md`). Only the CFR multi-row *composer* (`cfr_source_assembly_v1`) remains (CFR-A2).
 5. **Run CFR-A1** against snapshot-aligned eCFR (human-staged, edition-pinned); report the metrics, especially the multi-row-CFR **abstention rate** (drives decision B).
 6. **In parallel, start M0.5B1 / B2 / B3** (decide USLM runtime-vs-eval first for B1; respect the B→C dependency).
 
