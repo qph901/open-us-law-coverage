@@ -37,8 +37,21 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Snapshot label -> immutable dataset commit/tag. Fill in as snapshots are pinned
 # (a full 40-char commit SHA or an immutable tag — never a branch). When a label is
 # not listed here, an explicit immutable ``--revision`` is required.
+#
+# **How a pin is established (NEXT.md D4).** Never transcribe a commit prefix from a
+# report — a commit that *introduced* regulations is not proof it is the exact
+# revision every staged Parquet came from (later commits can change bytes under one
+# label). The pin is established by **checksum-matching**: resolve candidate history
+# to full SHAs, and adopt the revision whose ``SHA256SUMS.json`` matches the sha256
+# of *every* staged local file (see :func:`find_matching_revision`). If no revision
+# matches all staged files, record that limitation explicitly rather than assert a
+# false pin, and re-download from a deliberately chosen immutable revision.
 SNAPSHOT_REVISIONS: dict[str, str] = {
-    # "v2026.08": "2806c009c55c...",  # HF commit that introduced regulations
+    # Established by checksum (NEXT.md D4), not transcription: this is the single HF
+    # commit for the dataset ("Open US Law v2026.08. Prior snapshots withdrawn.",
+    # 2026-08-26), and its SHA256SUMS.json matches the sha256 of all 229 staged
+    # Parquet files (verified via find_matching_revision).
+    "v2026.08": "16bc9a159faabea4af9db08f1b33832e80e85b2d",
 }
 
 # The M0 reconnaissance sample: the commissioned USC corpus, a large and a small
@@ -126,15 +139,31 @@ def download(
     out = out_root / snapshot
     out.mkdir(parents=True, exist_ok=True)
     paths = []
-    files = [f"{n}.parquet" if not n.endswith(".parquet") else n for n in names]
-    files.append("SHA256SUMS.json")
-    for f in files:
+    parquet_files = [f"{n}.parquet" if not n.endswith(".parquet") else n for n in names]
+    for f in [*parquet_files, "SHA256SUMS.json"]:
         print(f"downloading {f} @ {revision} ...", flush=True)
         p = hf_hub_download(REPO, f, repo_type="dataset", revision=revision,
                             local_dir=str(out), token=token)
         paths.append(Path(p))
-    # Persist the resolved commit SHA (and the ref that was requested) so the
-    # snapshot label stays auditable.
+    # Verify BEFORE persisting metadata (NEXT.md D4/C.1): DOWNLOAD_METADATA.json is a
+    # certificate that these exact bytes came from this revision, so it must not be
+    # written until every requested file has passed its checksum.
+    verify(snapshot, out_root, expected=parquet_files)
+    write_download_metadata(
+        out, snapshot, revision, requested_ref, [Path(p).name for p in paths]
+    )
+    return paths
+
+
+def write_download_metadata(
+    out: Path,
+    snapshot: str,
+    revision: str,
+    requested_ref: str | None,
+    files: list[str],
+) -> None:
+    """Persist the resolved commit SHA (and requested ref) so the snapshot label stays
+    auditable. Written only after :func:`verify` passes."""
     (out / "DOWNLOAD_METADATA.json").write_text(
         json.dumps(
             {
@@ -143,27 +172,89 @@ def download(
                 "requested_ref": requested_ref,
                 "revision": revision,  # resolved immutable commit SHA
                 "downloaded_at": datetime.now(timezone.utc).isoformat(),
-                "files": [Path(p).name for p in paths],
+                "files": sorted(files),
             },
             indent=2,
         )
+        + "\n"
     )
-    return paths
 
 
-def verify(snapshot: str, out_root: Path) -> None:
+def verify(snapshot: str, out_root: Path, *, expected: list[str] | None = None) -> list[str]:
+    """Check every staged Parquet against ``SHA256SUMS.json``; return the verified names.
+
+    A requested/staged Parquet that is **absent from the manifest is a failure**
+    (NEXT.md D4/C.1) — the old code printed ``??`` and continued, which would let an
+    uncovered file ride along uncertified. If ``expected`` is given, every name in it
+    must also be present and verified.
+    """
     out = out_root / snapshot
     sums = json.loads((out / "SHA256SUMS.json").read_text())
     by_file = {e["file"]: e for e in sums}
+    verified: list[str] = []
     for p in sorted(out.glob("*.parquet")):
         entry = by_file.get(p.name)
-        if not entry:
-            print(f"?? {p.name}: not in SHA256SUMS")
-            continue
-        ok = _sha256(p) == entry["sha256"]
-        print(f"{'OK ' if ok else 'BAD'} {p.name}  rows={entry.get('rows')}")
-        if not ok:
+        if entry is None:
+            raise SystemExit(
+                f"{p.name} is not in SHA256SUMS.json — refusing to certify a file the "
+                f"manifest does not cover"
+            )
+        if _sha256(p) != entry["sha256"]:
+            print(f"BAD {p.name}", flush=True)
             raise SystemExit(f"checksum mismatch for {p.name}")
+        print(f"OK  {p.name}  rows={entry.get('rows')}", flush=True)
+        verified.append(p.name)
+    if expected:
+        missing = [f for f in expected if f not in verified]
+        if missing:
+            raise SystemExit(f"expected files missing after verify: {missing}")
+    return verified
+
+
+def load_manifest(path: Path) -> dict[str, str]:
+    """A ``SHA256SUMS.json`` file reduced to ``{filename: sha256}``."""
+    return {e["file"]: e["sha256"] for e in json.loads(path.read_text())}
+
+
+def manifest_matches_local(
+    manifest: dict[str, str], local: dict[str, str]
+) -> bool:
+    """True iff every staged local file appears in ``manifest`` with a matching sha256.
+
+    The staged set may be a subset of the full snapshot, so extra manifest entries are
+    fine; a staged file that is missing from the manifest, or whose sha disagrees, is
+    a non-match.
+    """
+    return bool(local) and all(manifest.get(name) == sha for name, sha in local.items())
+
+
+def find_matching_revision(
+    snapshot: str,
+    candidate_refs: list[str],
+    out_root: Path,
+    *,
+    resolver: Callable[[str], str] = _hf_ref_resolver,
+    manifest_fetcher: Callable[[str], dict[str, str]],
+) -> str | None:
+    """Establish the snapshot pin by checksum (NEXT.md D4).
+
+    For each candidate ref: resolve it to a full commit SHA, fetch that revision's
+    ``SHA256SUMS.json``, and compare it against the sha256 of every staged local file.
+    The first revision whose manifest matches all staged files is the pin. Returns
+    ``None`` if none matches — the caller must then record the limitation explicitly
+    rather than assert a false pin.
+    """
+    out = out_root / snapshot
+    local = {p.name: _sha256(p) for p in sorted(out.glob("*.parquet"))}
+    if not local:
+        raise SystemExit(f"no staged Parquet under {out} to match a revision against")
+    for ref in candidate_refs:
+        sha = resolver(ref)
+        if not (sha and _COMMIT_SHA_RE.match(sha)):
+            continue
+        if manifest_matches_local(manifest_fetcher(sha), local):
+            return sha
+    return None
 
 
 def main() -> None:
@@ -181,9 +272,10 @@ def main() -> None:
     revision = resolve_revision(args.snapshot, args.revision)
     if requested_ref != revision:
         print(f"resolved ref {requested_ref!r} -> commit {revision}", flush=True)
+    # download() verifies every file against SHA256SUMS.json and writes
+    # DOWNLOAD_METADATA.json only if that passes (NEXT.md D4/C.1).
     download(args.names or M0_SAMPLE, args.snapshot, revision, args.out,
              requested_ref=requested_ref)
-    verify(args.snapshot, args.out)
 
 
 if __name__ == "__main__":
