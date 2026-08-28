@@ -1,4 +1,4 @@
-"""M1A.5 headline acceptance — the durable-foreign-key test.
+"""M1A.5 headline acceptance — the durable-foreign-key test (against real producers).
 
 From ``PROPOSAL.md`` ("Data contracts", "The durable-foreign-key rule") and
 ``NEXT.md`` (D1, B.3):
@@ -15,9 +15,10 @@ mutable ``source_identity_key``. The key/``legal_id`` live on a separate version
 :class:`AssemblyIdentityAssociation` (review B3), not on the content-addressed
 assembly.
 
-Phase A exercises the property against fabricated group/member artifacts (the shape
-is what is under test here); ``test_identity_group.py`` and the Phase B producer
-suites exercise it against real producer outputs.
+**B.3: exercised against actual producer outputs**, not fabricated annotations. Two
+real strategies over one member set stand in for the strategy-improvement (v1->v2)
+case: different strategy identity => different key and group id, same physical
+anchors.
 """
 
 from __future__ import annotations
@@ -25,19 +26,20 @@ from __future__ import annotations
 from pathlib import Path
 
 from open_us_law_coverage.derived import (
-    ArtifactInput,
     ArtifactType,
+    AssemblyStatus,
     AssemblyStrategy,
     DerivedArtifactProvenance,
-    Evidence,
-    IdentityScope,
-    IdentityStatus,
+    IdentityMember,
     InputType,
-    SourceIdentityGroup,
-    SourceIdentityMemberAnnotation,
-    SourceIdentityResult,
+    MemberRole,
+    Operation,
+    SourceDocumentAssembly,
     associate_assembly_with_identity,
+    cfr_identity_group,
     check_payload_collisions,
+    federal_register_document_group,
+    resolve_single_record_identity,
     source_record_inputs,
 )
 from open_us_law_coverage.derived.assembly import (
@@ -49,110 +51,92 @@ from open_us_law_coverage.source_record import read_source_records
 from tests.conftest import SNAPSHOT
 
 
-def _identity_result(
-    members, *, strategy: str, key: str, producer_version: str
-) -> SourceIdentityResult:
-    """A fabricated identity result (group + one annotation per member) in the D1
-    shape: the group is content-addressed by the complete member set, each member
-    annotation names the group and its own record."""
-    canonical = tuple(sorted(members))
-    group_prov = DerivedArtifactProvenance.build(
-        ArtifactType.SOURCE_IDENTITY_GROUP,
-        source_record_inputs(canonical),
-        "identity_strategy",
-        producer_version,
-    )
-    group = SourceIdentityGroup(
-        provenance=group_prov,
-        strategy_name=strategy,
-        source_identity_key=key,
-        member_source_record_ids=canonical,
-        identity_scope=IdentityScope.DOCUMENT,
-        identity_status=IdentityStatus.RESOLVED,
-        confidence=1.0,
-        evidence=(Evidence("test", "synthetic group"),),
-    )
-    annotations = tuple(
-        SourceIdentityMemberAnnotation(
-            provenance=DerivedArtifactProvenance.build(
-                ArtifactType.SOURCE_IDENTITY_MEMBER_ANNOTATION,
-                (
-                    ArtifactInput(InputType.ANNOTATION, group.provenance.artifact_id),
-                    ArtifactInput(InputType.SOURCE_RECORD, m),
-                ),
-                "identity_strategy",
-                producer_version,
-            ),
-            target_source_record_id=m,
+def _members(n: int) -> list[IdentityMember]:
+    return [
+        IdentityMember(
+            source_record_id=f"srr:sha256:r{i}",
+            act_id="X_1",
+            state="US",
+            corpus="regulations",
+            document_type="regulation",
+            raw_text_hash=f"h{i}",
+            physical_row_ordinal=i,
         )
-        for m in canonical
+        for i in range(n)
+    ]
+
+
+def test_two_real_strategies_coexist_over_same_records():
+    """Strategy A (cfr_identity_v1) and strategy B (federal_register_document_v1) over
+    one member set stand in for the strategy-improvement (v1->v2) case: two distinct
+    group artifacts (different producer identity => different ``artifact_id`` and a
+    different conclusion body) over one physical anchor set, both valid at once. The
+    ``source_identity_key`` is strategy-independent by design — the durable-FK
+    guarantee is not that the key differs but that no immutable artifact hashes it."""
+    members = _members(3)
+    a = cfr_identity_group(members)
+    b = federal_register_document_group(members)
+
+    assert a.group.provenance.artifact_id != b.group.provenance.artifact_id
+    assert a.group.payload_hash != b.group.payload_hash  # different conclusion bodies
+    anchors = tuple(sorted(m.source_record_id for m in members))
+    assert a.group.provenance.source_record_ids() == anchors
+    assert b.group.provenance.source_record_ids() == anchors
+    check_payload_collisions([a.group, b.group, *a.members, *b.members])
+
+
+def test_no_provenance_edge_references_the_identity_key():
+    members = _members(3)
+    result = cfr_identity_group(members)
+    key = result.group.source_identity_key
+    all_edges = list(result.group.provenance.inputs)
+    for m in result.members:
+        all_edges.extend(m.provenance.inputs)
+    edge_ids = {e.input_id for e in all_edges}
+    assert key not in edge_ids
+    # every edge is a source_record or an annotation (the group id), never the key.
+    assert all(
+        e.input_type in {InputType.SOURCE_RECORD, InputType.ANNOTATION}
+        for e in all_edges
     )
-    return SourceIdentityResult(group=group, members=annotations)
 
 
-def test_identity_v1_v2_coexist_over_same_records(fixture_parquet: Path):
-    records = read_source_records(fixture_parquet, SNAPSHOT)
-    members = [r.source_record_id for r in records[:3]]
-
-    v1 = _identity_result(members, strategy="cfr_identity_v1", key="KEY_A", producer_version="1")
-    v2 = _identity_result(members, strategy="cfr_identity_v2", key="KEY_B", producer_version="2")
-
-    # Two strategies, two keys, one member set — both are valid at once.
-    assert v1.group.source_identity_key != v2.group.source_identity_key
-    assert v1.group.provenance.artifact_id != v2.group.provenance.artifact_id
-    # Both still point at exactly the same physical rows.
-    assert set(v1.group.provenance.source_record_ids()) == set(members)
-    assert set(v2.group.provenance.source_record_ids()) == set(members)
-    # No collision in a shared store.
-    check_payload_collisions([v1.group, v2.group, *v1.members, *v2.members])
-
-
-def test_membership_change_rehashes_group_and_members(fixture_parquet: Path):
+def test_membership_change_rehashes_group_and_surviving_members():
     """D1 recompute frontier: dropping a member changes the group id AND every
-    surviving member annotation's id (they name the group as an input)."""
-    records = read_source_records(fixture_parquet, SNAPSHOT)
-    members = [r.source_record_id for r in records[:3]]
-
-    full = _identity_result(members, strategy="cfr_identity_v1", key="K", producer_version="1")
-    dropped = _identity_result(members[:2], strategy="cfr_identity_v1", key="K", producer_version="1")
+    surviving member annotation (each names the group as an input)."""
+    members = _members(3)
+    full = cfr_identity_group(members)
+    dropped = cfr_identity_group(members[:2])
 
     assert full.group.provenance.artifact_id != dropped.group.provenance.artifact_id
-    # The two members that survive get NEW annotation ids because the group input changed.
-    surviving = set(members[:2])
     full_ids = {
-        a.target_source_record_id: a.provenance.artifact_id
-        for a in full.members
-        if a.target_source_record_id in surviving
+        m.target_source_record_id: m.provenance.artifact_id for m in full.members
     }
     dropped_ids = {
-        a.target_source_record_id: a.provenance.artifact_id for a in dropped.members
+        m.target_source_record_id: m.provenance.artifact_id for m in dropped.members
     }
-    for rid in surviving:
+    for rid in dropped_ids:
         assert full_ids[rid] != dropped_ids[rid]
 
 
-def test_no_provenance_edge_references_the_identity_key(fixture_parquet: Path):
+def test_downstream_assembly_anchors_to_source_record_only(fixture_parquet: Path):
     records = read_source_records(fixture_parquet, SNAPSHOT)
-    members = [r.source_record_id for r in records[:3]]
-    ident = _identity_result(members, strategy="cfr_identity_v1", key="KEY_A", producer_version="1")
-
-    # A downstream assembly over the group anchors to source_record_ids, never to
-    # the (mutable) source_identity_key.
-    downstream = assemble_trivial_single_record(records[0])
+    rec = records[0]
+    ident = resolve_single_record_identity(rec)
+    assert ident is not None
+    downstream = assemble_trivial_single_record(rec)
     edge_ids = {e.input_id for e in downstream.provenance.inputs}
     assert ident.group.source_identity_key not in edge_ids
-    assert all(e.input_type == InputType.SOURCE_RECORD for e in downstream.provenance.inputs)
+    assert all(
+        e.input_type == InputType.SOURCE_RECORD for e in downstream.provenance.inputs
+    )
 
 
 def test_assembly_id_is_invariant_to_the_identity_key(fixture_parquet: Path):
-    """The sharp edge of the rule (review B3): the same assembly body has one
-    ``artifact_id`` regardless of which identity key associates with it — because
-    the key is no longer a field on the content-addressed assembly. Key A and key B
-    associate with the *same* assembly id."""
-    records = read_source_records(fixture_parquet, SNAPSHOT)
-    rec = records[0]
+    """Review B3: the same assembly body has one ``artifact_id`` regardless of which
+    identity key associates with it — the key is not a field on the assembly."""
+    rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     asm = assemble_trivial_single_record(rec)
-
     assoc_a = associate_assembly_with_identity(
         "KEY_A", asm, strategy_name="cfr_identity_v1", strategy_version="1"
     )
@@ -160,24 +144,14 @@ def test_assembly_id_is_invariant_to_the_identity_key(fixture_parquet: Path):
         "KEY_B", asm, strategy_name="cfr_identity_v2", strategy_version="2"
     )
     assert assoc_a.source_identity_key != assoc_b.source_identity_key
-    # One immutable assembly body -> one artifact id under both keys.
     assert assoc_a.assembly_artifact_id == assoc_b.assembly_artifact_id
 
 
 def test_assembly_v1_v2_coexist_over_same_members(fixture_parquet: Path):
-    """NEXT.md A.5: exercised against a genuine shape difference — a legacy v1-labeled
-    fixture vs. the real v2 producer — not two labels of one body (the version is no
-    longer caller-overridable)."""
-    records = read_source_records(fixture_parquet, SNAPSHOT)
-    rec = records[0]
+    """NEXT.md A.5: a genuine shape difference — a legacy v1-labeled fixture vs. the
+    real v2 producer over one record — not two labels of one body."""
+    rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     v2 = assemble_trivial_single_record(rec)
-
-    from open_us_law_coverage.derived import (
-        AssemblyStatus,
-        MemberRole,
-        Operation,
-        SourceDocumentAssembly,
-    )
 
     legacy_prov = DerivedArtifactProvenance.build(
         ArtifactType.SOURCE_DOCUMENT_ASSEMBLY,
@@ -196,15 +170,12 @@ def test_assembly_v1_v2_coexist_over_same_members(fixture_parquet: Path):
         assembled_text=text,
         assembled_text_hash=compute_assembled_text_hash(text),
     )
-    # Different producer versions -> distinct artifacts, same physical anchor.
     assert v1.provenance.artifact_id != v2.provenance.artifact_id
     assert v1.provenance.source_record_ids() == v2.provenance.source_record_ids()
+    check_payload_collisions([v1, v2])
 
 
 def test_immutable_core_carries_no_identity_key(fixture_parquet: Path):
-    """No ``CanonicalSourceRecord`` field is derived from an identity key — the
-    core cannot be corrupted by an identity-strategy change."""
-    records = read_source_records(fixture_parquet, SNAPSHOT)
-    rec = records[0]
+    rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     assert not hasattr(rec, "source_identity_key")
     assert "source_identity_key" not in rec.original_columns

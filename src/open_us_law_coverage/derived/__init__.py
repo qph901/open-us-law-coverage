@@ -58,6 +58,17 @@ from .identity import (
     SourceIdentityMemberAnnotation,
     SourceIdentityResult,
 )
+from .identity_strategies import (
+    IdentityMember,
+    cfr_identity_group,
+    constitution_identity,
+    corpus_of_source_file,
+    federal_register_document_group,
+    identity_member,
+    resolve_single_record_identity,
+    state_statute_act_id_identity,
+    usc_act_id_identity,
+)
 from .provenance import (
     ArtifactInput,
     ArtifactType,
@@ -104,6 +115,16 @@ __all__ = [
     "SourceIdentityGroup",
     "SourceIdentityMemberAnnotation",
     "SourceIdentityResult",
+    # identity strategies (Phase B producers)
+    "IdentityMember",
+    "identity_member",
+    "corpus_of_source_file",
+    "usc_act_id_identity",
+    "state_statute_act_id_identity",
+    "constitution_identity",
+    "resolve_single_record_identity",
+    "cfr_identity_group",
+    "federal_register_document_group",
     # classification
     "AuthorityRole",
     "DocumentClass",
