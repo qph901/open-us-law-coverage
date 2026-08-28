@@ -35,7 +35,21 @@ def test_identity_and_paths_stay_distinct_despite_shared_text(fixture_parquet: P
 
 
 def test_assembly_is_lossless(fixture_parquet: Path):
-    assert analyze_ca(fixture_parquet).assembly_lossless is True
+    res = analyze_ca(fixture_parquet)
+    assert res.assembly_lossless is True
+    assert res.assembly_checked == res.rows  # full corpus, not sampled
+
+
+def test_identity_producer_and_within_group_dedup(fixture_parquet: Path):
+    """The real identity producer runs per row (single-member groups), and
+    detect_duplicate_rows within each group flags nothing — even though the fixture's
+    byte-identical twins are content duplicates across distinct identities."""
+    res = analyze_ca(fixture_parquet)
+    assert res.identity_single_member == res.rows
+    assert res.identity_multi_member == 0
+    assert res.within_group_duplicate_rows == 0
+    # content duplication still exists at corpus scope (the contrast).
+    assert res.content_dup_rows == 2
 
 
 def test_no_distortion_on_real_ca_sample():
@@ -47,4 +61,10 @@ def test_no_distortion_on_real_ca_sample():
     assert res.distinct_act_ids == res.rows          # identity 1:1
     assert res.distinct_structural_paths == res.rows # structural anchor 1:1
     assert res.assembly_lossless is True
+    assert res.assembly_checked == res.rows          # full corpus
     assert set(res.doc_class) == {"statute"}
+    # real identity producer: every row a single-member group; 0 within-group dups.
+    assert res.identity_single_member == res.rows
+    assert res.identity_multi_member == 0
+    assert res.within_group_duplicate_rows == 0
+    assert set(res.identity_strategy) == {"state_statute_act_id_v1"}
