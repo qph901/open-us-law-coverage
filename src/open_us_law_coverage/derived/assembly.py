@@ -38,6 +38,7 @@ from .provenance import (
     ArtifactType,
     DerivedArtifactProvenance,
     Evidence,
+    assign_payload_hash,
     source_record_inputs,
 )
 
@@ -117,6 +118,7 @@ class SourceDocumentAssembly:
     assembled_text: str | None
     assembled_text_hash: str | None
     confidence: float = 1.0
+    payload_hash: str = ""
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -136,11 +138,21 @@ class SourceDocumentAssembly:
                 f"{ArtifactType.SOURCE_DOCUMENT_ASSEMBLY}, got "
                 f"{self.provenance.artifact_type}"
             )
-        if set(self.provenance.source_record_ids()) != set(self.member_source_record_ids):
+        # Exact membership (NEXT.md A.4): no duplicate members, and the canonical
+        # (sorted, unique) member set must exactly equal the provenance source_record
+        # inputs — a set-only check would silently accept a member listed twice.
+        # Member *order* is still meaningful (operations are parallel to members), so
+        # only the canonicalized comparison is order-independent, not the stored tuple.
+        if len(set(self.member_source_record_ids)) != n:
             raise ValueError(
-                "member_source_record_ids must match the provenance source_record "
-                f"inputs (members={sorted(set(self.member_source_record_ids))}, "
-                f"provenance={sorted(set(self.provenance.source_record_ids()))})"
+                f"duplicate assembly members are not allowed: "
+                f"{self.member_source_record_ids}"
+            )
+        if tuple(sorted(self.member_source_record_ids)) != self.provenance.source_record_ids():
+            raise ValueError(
+                "member_source_record_ids must exactly match the provenance "
+                f"source_record inputs (members={sorted(self.member_source_record_ids)}, "
+                f"provenance={list(self.provenance.source_record_ids())})"
             )
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be in [0, 1], got {self.confidence!r}")
@@ -161,6 +173,20 @@ class SourceDocumentAssembly:
                 f"assembly_status {self.assembly_status} requires a null "
                 f"assembled_text (nothing composable to return)"
             )
+        assign_payload_hash(
+            self,
+            ArtifactType.SOURCE_DOCUMENT_ASSEMBLY,
+            {
+                "member_source_record_ids": list(self.member_source_record_ids),
+                "member_roles": list(self.member_roles),
+                "operations": list(self.operations),
+                "assembly_strategy": self.assembly_strategy,
+                "assembly_status": self.assembly_status,
+                "assembled_text_hash": self.assembled_text_hash,
+                "confidence": self.confidence,
+                "evidence": list(self.evidence),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,11 +207,21 @@ class AssemblyIdentityAssociation:
     legal_id: str | None = None
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
+    def __post_init__(self) -> None:
+        # An association with an empty key or dangling assembly id is a bug — it would
+        # anchor ``legal_id`` to nothing (NEXT.md A.3). It carries no ``payload_hash``
+        # of its own: it is a mutable link, deliberately *outside* the content-addressed
+        # assembly, so it is never run through the collision tripwire.
+        if not self.source_identity_key:
+            raise ValueError("source_identity_key must be non-empty")
+        if not self.assembly_artifact_id:
+            raise ValueError("assembly_artifact_id must be non-empty")
+        if not self.strategy_name or not self.strategy_version:
+            raise ValueError("strategy_name and strategy_version must be non-empty")
+
 
 def assemble_trivial_single_record(
     record: "CanonicalSourceRecord",
-    *,
-    producer_version: str = TRIVIAL_PRODUCER_VERSION,
 ) -> SourceDocumentAssembly:
     """The one-row pass-through: keep the single member's ``raw_text`` verbatim.
 
@@ -195,6 +231,11 @@ def assemble_trivial_single_record(
     nothing returnable to compose); an empty string ``""`` is a valid, complete
     empty provision. The assembly is not keyed by any identity key — associate it
     with one via :func:`associate_assembly_with_identity`.
+
+    The producer version is the module constant ``TRIVIAL_PRODUCER_VERSION`` and is
+    **not** caller-overridable (NEXT.md A.5): the version is a property of the code,
+    not the call site — a caller that could relabel it could forge a v1 id from v2
+    output, or hide a real shape change behind an old version.
     """
     if record.raw_text is None:
         assembled_text = None
@@ -221,7 +262,7 @@ def assemble_trivial_single_record(
         ArtifactType.SOURCE_DOCUMENT_ASSEMBLY,
         source_record_inputs([record.source_record_id]),
         TRIVIAL_PRODUCER_NAME,
-        producer_version,
+        TRIVIAL_PRODUCER_VERSION,
     )
     return SourceDocumentAssembly(
         provenance=provenance,

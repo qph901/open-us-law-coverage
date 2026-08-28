@@ -33,6 +33,7 @@ from .provenance import (
     ArtifactType,
     DerivedArtifactProvenance,
     Evidence,
+    assign_payload_hash,
     source_record_inputs,
 )
 
@@ -109,7 +110,37 @@ class DocumentClassificationAnnotation:
     document_class: DocumentClass
     authority_role: AuthorityRole
     confidence: float
+    payload_hash: str = ""
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if (
+            self.provenance.artifact_type
+            != ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION
+        ):
+            raise ValueError(
+                f"classification provenance must be artifact_type "
+                f"{ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION}, got "
+                f"{self.provenance.artifact_type}"
+            )
+        # A per-record annotation rests on exactly one physical row.
+        if len(self.provenance.source_record_ids()) != 1:
+            raise ValueError(
+                "classification provenance must name exactly one source_record input, "
+                f"got {self.provenance.source_record_ids()}"
+            )
+        if not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(f"confidence must be in [0, 1], got {self.confidence!r}")
+        assign_payload_hash(
+            self,
+            ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION,
+            {
+                "document_class": self.document_class,
+                "authority_role": self.authority_role,
+                "confidence": self.confidence,
+                "evidence": list(self.evidence),
+            },
+        )
 
 
 def act_id_prefix(act_id: str | None) -> str | None:
@@ -222,15 +253,14 @@ def classify(
 
 def classify_source_record(
     record: "CanonicalSourceRecord",
-    *,
-    producer_version: str = PRODUCER_VERSION,
 ) -> DocumentClassificationAnnotation:
     """Produce a ``DocumentClassificationAnnotation`` for one source record.
 
     Reads the ``document_type`` and ``act_id`` source columns. Provenance anchors
     to the record's ``source_record_id`` (never to any identity key). Duck-typed on
     ``.source_record_id`` and ``.column(...)``, so it needs no import of the
-    immutable-core module at runtime.
+    immutable-core module at runtime. The producer version is the module constant,
+    **not** caller-overridable (NEXT.md A.5).
     """
     document_type = record.column("document_type")
     act_id = record.column("act_id")
@@ -239,7 +269,7 @@ def classify_source_record(
         ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION,
         source_record_inputs([record.source_record_id]),
         PRODUCER_NAME,
-        producer_version,
+        PRODUCER_VERSION,
     )
     return DocumentClassificationAnnotation(
         provenance=provenance,

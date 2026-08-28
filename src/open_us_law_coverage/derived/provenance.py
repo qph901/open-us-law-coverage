@@ -23,9 +23,10 @@ reproducibility contract.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +46,13 @@ class InputType(StrEnum):
 class ArtifactType(StrEnum):
     """Every derived-artifact type that carries a ``DerivedArtifactProvenance``."""
 
-    SOURCE_IDENTITY_ANNOTATION = "source_identity_annotation"
+    # Identity is a content-addressed group + per-member annotations (NEXT.md D1,
+    # the ``DuplicateScope`` analogue): the group is keyed by the COMPLETE member
+    # set, each member annotation names the group and its own record. The old flat
+    # ``source_identity_annotation`` — a lone scalar segment unbound on a
+    # multi-member object — is withdrawn.
+    SOURCE_IDENTITY_GROUP = "source_identity_group"
+    SOURCE_IDENTITY_MEMBER_ANNOTATION = "source_identity_member_annotation"
     DOCUMENT_CLASSIFICATION_ANNOTATION = "document_classification_annotation"
     QUALITY_ANNOTATION = "quality_annotation"
     # The detector-run/scope artifact a cross-record quality conclusion names as an
@@ -81,6 +88,89 @@ class Evidence:
             )
         if not self.kind:
             raise ValueError("Evidence.kind must be non-empty")
+
+
+# ---------------------------------------------------------------------------
+# payload_hash — the SEMANTIC content address (NEXT.md D2).
+#
+# ``artifact_id`` is a *derivation* address: hash(inputs, type, producer, version,
+# config), pre-computable before the body exists — that is what the recompute
+# frontier relies on, so the semantic body must NOT be folded into it. But the
+# derivation->body guarantee is only as strong as release discipline: a
+# deterministic producer whose code changes without a version bump (or an
+# output-affecting knob not folded into ``config_hash``) silently emits a new body
+# under the old id. So every derived artifact ALSO carries a ``payload_hash``: the
+# canonical hash of its semantic conclusion fields (audit-only metadata excluded),
+# validated against the body in ``__post_init__``.
+#
+# This mirrors the M1A house rule that keeps ``source_record_id`` (physical) apart
+# from ``raw_text_hash`` (content). The corrected guarantee: equal ``artifact_id``
+# => equal (inputs, producer, version, config); equal ``payload_hash`` => equal
+# canonical semantic payload; a well-governed store never holds two payloads under
+# one ``artifact_id`` (the tripwire in :func:`check_payload_collisions`).
+# ---------------------------------------------------------------------------
+
+def _canonical(obj: Any) -> Any:
+    """Recursively reduce a payload to JSON-canonical primitives.
+
+    ``StrEnum`` members are ``str`` subclasses, so they serialize as their value.
+    ``Evidence`` reduces to an ordered mapping; tuples become lists (JSON has no
+    tuple). Anything else is a programming error — better to raise than to hash an
+    opaque ``repr`` that could drift.
+    """
+    if obj is None or isinstance(obj, (bool, int, float)):
+        return obj
+    if isinstance(obj, str):  # includes StrEnum members
+        return str(obj)
+    if isinstance(obj, Evidence):
+        return {"kind": obj.kind, "detail": obj.detail, "confidence": obj.confidence}
+    if isinstance(obj, (list, tuple)):
+        return [_canonical(x) for x in obj]
+    if isinstance(obj, dict):
+        return {str(k): _canonical(v) for k, v in obj.items()}
+    raise TypeError(f"payload field is not canonically serializable: {obj!r}")
+
+
+def compute_payload_hash(artifact_type: ArtifactType | str, payload: Any) -> str:
+    """Canonical hash of a derived artifact's semantic body.
+
+    ``payload`` is the conclusion fields only — ``generated_at`` and any audit-only
+    field are excluded by the caller. The ``artifact_type`` is folded in so two
+    different artifact kinds with a coincidentally-identical body never collide.
+    Serialization is order-stable (``sort_keys``) and tuple/enum-agnostic.
+    """
+    blob = json.dumps(
+        {"t": str(artifact_type), "p": _canonical(payload)},
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return "pay:sha256:" + _sha256_hex(blob.encode("utf-8"))
+
+
+class PayloadCollisionError(ValueError):
+    """Two artifacts share an ``artifact_id`` but disagree on ``payload_hash`` — the
+    "unbumped producer change" surfaced as an error instead of a silent overwrite."""
+
+
+def assign_payload_hash(
+    instance: Any, artifact_type: ArtifactType | str, payload: Any
+) -> None:
+    """Compute, validate, and set ``instance.payload_hash`` from its semantic body.
+
+    Mirrors the M1A ``source_record_id`` pattern so direct construction is as safe
+    as the producer path: an empty stored value is filled in; a non-empty value that
+    disagrees with the recomputed hash is rejected (a caller that hand-set a stale or
+    wrong payload hash). Frozen-dataclass friendly (writes via ``object.__setattr__``).
+    """
+    expected = compute_payload_hash(artifact_type, payload)
+    stored = instance.payload_hash
+    if stored and stored != expected:
+        raise ValueError(
+            f"payload_hash {stored!r} is inconsistent with the artifact body "
+            f"(recomputed {expected!r})"
+        )
+    object.__setattr__(instance, "payload_hash", expected)
 
 
 # ---------------------------------------------------------------------------
@@ -229,3 +319,27 @@ class DerivedArtifactProvenance:
 
     def input_ids_of(self, input_type: InputType) -> tuple[str, ...]:
         return tuple(e.input_id for e in self.inputs if e.input_type == input_type)
+
+
+def check_payload_collisions(artifacts: Iterable[Any]) -> None:
+    """The equal-id / unequal-payload tripwire (NEXT.md D2).
+
+    Any store or test that ingests derived artifacts should run them through this:
+    if two artifacts present the same ``provenance.artifact_id`` but different
+    ``payload_hash``, a producer changed its output without bumping its version (or
+    an output-affecting knob escaped ``config_hash``). That is precisely the silent
+    overwrite the derivation/semantic split exists to catch — so raise instead.
+    Duck-typed on ``.provenance.artifact_id`` / ``.payload_hash`` (every derived
+    artifact has both), so ``derived/`` keeps no import of the immutable core.
+    """
+    seen: dict[str, str] = {}
+    for art in artifacts:
+        artifact_id = art.provenance.artifact_id
+        payload_hash = art.payload_hash
+        prior = seen.get(artifact_id)
+        if prior is not None and prior != payload_hash:
+            raise PayloadCollisionError(
+                f"artifact_id {artifact_id!r} maps to two payloads "
+                f"({prior!r} != {payload_hash!r}): an unbumped producer change"
+            )
+        seen[artifact_id] = payload_hash

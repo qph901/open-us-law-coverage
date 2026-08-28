@@ -106,10 +106,19 @@ def test_identity_association_is_separate_and_does_not_change_the_assembly(fixtu
 
 
 def test_corrected_producer_is_v2_and_cannot_share_v1_artifact_id(fixture_parquet: Path):
-    """Review P1: the corrected producer changed the object it derives from a record
-    (no identity key, added confidence, null->noncomposable). It is published as v2,
-    so it can never collide with the deprecated v1 artifact id for the same record."""
-    from open_us_law_coverage.derived.assembly import TRIVIAL_PRODUCER_VERSION
+    """Review P1 / NEXT.md A.5: the corrected producer changed the object it derives
+    from a record (no identity key, added confidence, null->noncomposable). It is
+    published as v2, so it can never collide with the deprecated v1 artifact id.
+
+    The producer version is no longer caller-overridable, so this exercises a
+    *genuine* legacy shape difference: a hand-built v1-labeled legacy fixture vs. the
+    real v2 producer output over the same record — a different artifact id, and no
+    payload collision (distinct ids, so the tripwire has nothing to fire on)."""
+    from open_us_law_coverage.derived.assembly import (
+        TRIVIAL_PRODUCER_NAME,
+        TRIVIAL_PRODUCER_VERSION,
+    )
+    from open_us_law_coverage.derived import check_payload_collisions
 
     rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     corrected = assemble_trivial_single_record(rec)
@@ -117,10 +126,23 @@ def test_corrected_producer_is_v2_and_cannot_share_v1_artifact_id(fixture_parque
     assert corrected.provenance.producer_version == "2"
     assert corrected.assembly_strategy == AssemblyStrategy.TRIVIAL_SINGLE_RECORD_V2
 
-    # A v1-versioned build over the same record derives a *different* artifact id,
+    # A legacy v1-labeled artifact over the same record: built at producer version
+    # "1" with the deprecated strategy label. Its derivation address differs from v2,
     # so old and corrected semantics can never share one id.
-    as_if_v1 = assemble_trivial_single_record(rec, producer_version="1")
-    assert corrected.provenance.artifact_id != as_if_v1.provenance.artifact_id
+    legacy_prov = DerivedArtifactProvenance.build(
+        ArtifactType.SOURCE_DOCUMENT_ASSEMBLY,
+        source_record_inputs([rec.source_record_id]),
+        TRIVIAL_PRODUCER_NAME,
+        "1",
+    )
+    legacy_v1 = _assembly(
+        rec,
+        legacy_prov,
+        assembly_strategy=AssemblyStrategy.TRIVIAL_SINGLE_RECORD_V1,
+    )
+    assert corrected.provenance.artifact_id != legacy_v1.provenance.artifact_id
+    # Both coexist in one store without tripping the equal-id/unequal-payload check.
+    check_payload_collisions([corrected, legacy_v1])
 
 
 def test_assembly_provenance_anchors_to_source_record(fixture_parquet: Path):
@@ -189,7 +211,7 @@ def test_members_must_match_provenance_inputs(fixture_parquet: Path):
     """P2: member ids that disagree with the provenance source-record inputs are rejected."""
     rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     good = assemble_trivial_single_record(rec)
-    with pytest.raises(ValueError, match="must match the provenance"):
+    with pytest.raises(ValueError, match="exactly match the provenance"):
         _assembly(rec, good.provenance, member_source_record_ids=("srr:sha256:someone-else",))
 
 

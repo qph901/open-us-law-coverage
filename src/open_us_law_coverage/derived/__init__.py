@@ -6,16 +6,17 @@ boundary (see ``PROPOSAL.md`` "Settled architecture"): it is what our parsers
 core (M1A) knows nothing about any of it, and rebuilding any layer here has
 **zero** effect on ``source_record_id`` / ``raw_text_hash``.
 
-Layer order (locked): ``CanonicalSourceRecord[] -> SourceIdentityAnnotation
-(group) -> SourceDocumentAssembly (compose) -> DocumentAnatomy (parse) ->
+Layer order (locked): ``CanonicalSourceRecord[] -> SourceIdentityGroup (+ member
+annotations) -> SourceDocumentAssembly (compose) -> DocumentAnatomy (parse) ->
 LegalDocumentView``. This package delivers the first three interfaces plus their
 M1A.5 producers:
 
-* :mod:`.provenance` — ``DerivedArtifactProvenance`` as a **multi-input DAG**.
-  Every artifact carries one; durable references anchor to ``source_record_id``,
-  never to ``source_identity_key``.
-* :mod:`.identity` — ``SourceIdentityAnnotation`` (groups/characterizes only,
-  **never composes**).
+* :mod:`.provenance` — ``DerivedArtifactProvenance`` as a **multi-input DAG** plus
+  the ``payload_hash`` semantic content address and the equal-id/unequal-payload
+  tripwire (NEXT.md D2). Every artifact carries both; durable references anchor to
+  ``source_record_id``, never to ``source_identity_key``.
+* :mod:`.identity` — ``SourceIdentityGroup`` + ``SourceIdentityMemberAnnotation``
+  (the ``DuplicateScope`` analogue; groups/characterizes only, **never composes**).
 * :mod:`.classification` — ``DocumentClassificationAnnotation`` + the
   near-deterministic first producer.
 * :mod:`.quality` — ``QualityAnnotation`` + the ``duplicate_row``-only first
@@ -53,7 +54,9 @@ from .identity import (
     IdentityStatus,
     SegmentOrderConfidence,
     SegmentOrderMethod,
-    SourceIdentityAnnotation,
+    SourceIdentityGroup,
+    SourceIdentityMemberAnnotation,
+    SourceIdentityResult,
 )
 from .provenance import (
     ArtifactInput,
@@ -61,8 +64,12 @@ from .provenance import (
     DerivedArtifactProvenance,
     Evidence,
     InputType,
+    PayloadCollisionError,
+    assign_payload_hash,
     canonicalize_inputs,
+    check_payload_collisions,
     compute_artifact_id,
+    compute_payload_hash,
     source_record_inputs,
 )
 from .quality import (
@@ -82,15 +89,21 @@ __all__ = [
     "DerivedArtifactProvenance",
     "Evidence",
     "InputType",
+    "PayloadCollisionError",
+    "assign_payload_hash",
     "canonicalize_inputs",
+    "check_payload_collisions",
     "compute_artifact_id",
+    "compute_payload_hash",
     "source_record_inputs",
     # identity
     "IdentityScope",
     "IdentityStatus",
     "SegmentOrderConfidence",
     "SegmentOrderMethod",
-    "SourceIdentityAnnotation",
+    "SourceIdentityGroup",
+    "SourceIdentityMemberAnnotation",
+    "SourceIdentityResult",
     # classification
     "AuthorityRole",
     "DocumentClass",

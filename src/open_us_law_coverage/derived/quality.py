@@ -41,6 +41,7 @@ from .provenance import (
     DerivedArtifactProvenance,
     Evidence,
     InputType,
+    assign_payload_hash,
     source_record_inputs,
 )
 
@@ -76,7 +77,38 @@ class DuplicateScope:
 
     provenance: DerivedArtifactProvenance
     member_source_record_ids: tuple[str, ...]
+    payload_hash: str = ""
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if self.provenance.artifact_type != ArtifactType.DUPLICATE_SCOPE:
+            raise ValueError(
+                f"DuplicateScope provenance must be artifact_type "
+                f"{ArtifactType.DUPLICATE_SCOPE}, got {self.provenance.artifact_type}"
+            )
+        members = self.member_source_record_ids
+        if len(members) == 0:
+            raise ValueError("a DuplicateScope must have at least one member")
+        if len(set(members)) != len(members):
+            raise ValueError(f"duplicate scope members are not allowed: {members}")
+        if tuple(sorted(members)) != members:
+            raise ValueError(
+                f"member_source_record_ids must be sorted (canonical), got {members}"
+            )
+        if set(self.provenance.source_record_ids()) != set(members):
+            raise ValueError(
+                "member_source_record_ids must equal the provenance source_record "
+                f"inputs (members={sorted(members)}, "
+                f"provenance={sorted(set(self.provenance.source_record_ids()))})"
+            )
+        assign_payload_hash(
+            self,
+            ArtifactType.DUPLICATE_SCOPE,
+            {
+                "member_source_record_ids": list(members),
+                "evidence": list(self.evidence),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +125,39 @@ class QualityAnnotation:
     target_source_record_id: str
     quality_status: QualityStatus
     quality_flags: tuple[QualityFlag, ...] = field(default_factory=tuple)
+    payload_hash: str = ""
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if self.provenance.artifact_type != ArtifactType.QUALITY_ANNOTATION:
+            raise ValueError(
+                f"QualityAnnotation provenance must be artifact_type "
+                f"{ArtifactType.QUALITY_ANNOTATION}, got {self.provenance.artifact_type}"
+            )
+        if not self.target_source_record_id:
+            raise ValueError("target_source_record_id must be non-empty")
+        # Exactly one source_record edge (this target) and at least one scope edge.
+        if self.provenance.source_record_ids() != (self.target_source_record_id,):
+            raise ValueError(
+                "QualityAnnotation provenance must name exactly its target as the one "
+                f"source_record edge (target={self.target_source_record_id!r}, "
+                f"edges={self.provenance.source_record_ids()})"
+            )
+        if not self.provenance.input_ids_of(InputType.ANNOTATION):
+            raise ValueError(
+                "QualityAnnotation provenance must name its DuplicateScope as an "
+                "annotation input"
+            )
+        assign_payload_hash(
+            self,
+            ArtifactType.QUALITY_ANNOTATION,
+            {
+                "target_source_record_id": self.target_source_record_id,
+                "quality_status": self.quality_status,
+                "quality_flags": list(self.quality_flags),
+                "evidence": list(self.evidence),
+            },
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +177,6 @@ def is_duplicate_row(annotation: QualityAnnotation) -> bool:
 
 def detect_duplicate_rows(
     records: Iterable["CanonicalSourceRecord"],
-    *,
-    producer_version: str = PRODUCER_VERSION,
 ) -> DuplicateDetectionResult:
     """Flag byte-identical rows **within one candidate identity group**.
 
@@ -141,7 +203,7 @@ def detect_duplicate_rows(
         ArtifactType.DUPLICATE_SCOPE,
         source_record_inputs(canonical_member_ids),  # the COMPLETE member set
         PRODUCER_NAME,
-        producer_version,
+        PRODUCER_VERSION,
     )
     scope = DuplicateScope(
         provenance=scope_prov,
@@ -172,7 +234,7 @@ def detect_duplicate_rows(
                 ArtifactInput(InputType.SOURCE_RECORD, rec.source_record_id),
             ),
             PRODUCER_NAME,
-            producer_version,
+            PRODUCER_VERSION,
         )
         siblings = (
             by_hash.get(rec.raw_text_hash, []) if rec.raw_text_hash is not None else []

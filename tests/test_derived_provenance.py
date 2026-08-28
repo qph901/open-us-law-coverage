@@ -83,7 +83,7 @@ def test_producer_identity_changes_id():
         compute_artifact_id(ArtifactType.QUALITY_ANNOTATION, base, "p", "2"),
         compute_artifact_id(ArtifactType.QUALITY_ANNOTATION, base, "q", "1"),
         compute_artifact_id(ArtifactType.QUALITY_ANNOTATION, base, "p", "1", config_hash="cfg"),
-        compute_artifact_id(ArtifactType.SOURCE_IDENTITY_ANNOTATION, base, "p", "1"),
+        compute_artifact_id(ArtifactType.SOURCE_IDENTITY_GROUP, base, "p", "1"),
     }
     assert len(ids) == 5  # every distinguishing field moves the id
 
@@ -177,3 +177,106 @@ def test_evidence_confidence_range_enforced():
         Evidence("k", "d", confidence=1.5)
     with pytest.raises(ValueError):
         Evidence("k", "d", confidence=-0.1)
+
+
+# --- NEXT.md D2: payload_hash (semantic content address) + the tripwire --------
+
+
+def test_payload_hash_is_order_and_type_stable():
+    """Equal semantic bodies hash equally; tuples/lists and enum members serialize
+    to the same canonical bytes."""
+    from open_us_law_coverage.derived import Evidence, compute_payload_hash
+
+    a = compute_payload_hash(
+        ArtifactType.QUALITY_ANNOTATION,
+        {"flags": ["duplicate_row"], "evidence": [Evidence("k", "d", confidence=1.0)]},
+    )
+    b = compute_payload_hash(
+        ArtifactType.QUALITY_ANNOTATION,
+        {"evidence": [Evidence("k", "d", confidence=1.0)], "flags": ("duplicate_row",)},
+    )
+    assert a == b
+
+
+def test_payload_hash_distinguishes_body_and_type():
+    from open_us_law_coverage.derived import compute_payload_hash
+
+    base = {"document_class": "statute", "confidence": 1.0}
+    changed = {"document_class": "regulation", "confidence": 1.0}
+    assert compute_payload_hash(ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION, base) != (
+        compute_payload_hash(ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION, changed)
+    )
+    # same body, different artifact_type -> different hash (no cross-type collision).
+    assert compute_payload_hash(ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION, base) != (
+        compute_payload_hash(ArtifactType.QUALITY_ANNOTATION, base)
+    )
+
+
+def test_non_serializable_payload_field_raises():
+    from open_us_law_coverage.derived import compute_payload_hash
+
+    with pytest.raises(TypeError):
+        compute_payload_hash(ArtifactType.QUALITY_ANNOTATION, {"x": object()})
+
+
+def _classification(document_class, *, rid="r1"):
+    """A minimal directly-constructed classification annotation for tripwire tests."""
+    from open_us_law_coverage.derived import (
+        AuthorityRole,
+        DocumentClassificationAnnotation,
+    )
+
+    prov = DerivedArtifactProvenance.build(
+        ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION,
+        _edges(rid),
+        "classifier",
+        "1",
+    )
+    return DocumentClassificationAnnotation(
+        provenance=prov,
+        document_class=document_class,
+        authority_role=AuthorityRole.OPERATIVE_PRIMARY_LAW,
+        confidence=1.0,
+    )
+
+
+def test_payload_hash_assigned_and_validated_on_construction():
+    """A directly-built artifact fills its payload_hash; a hand-set wrong one raises."""
+    from open_us_law_coverage.derived import (
+        AuthorityRole,
+        DocumentClass,
+        DocumentClassificationAnnotation,
+    )
+
+    ann = _classification(DocumentClass.STATUTE)
+    assert ann.payload_hash.startswith("pay:sha256:")
+    prov = ann.provenance
+    with pytest.raises(ValueError, match="payload_hash"):
+        DocumentClassificationAnnotation(
+            provenance=prov,
+            document_class=DocumentClass.STATUTE,
+            authority_role=AuthorityRole.OPERATIVE_PRIMARY_LAW,
+            confidence=1.0,
+            payload_hash="pay:sha256:not-the-real-body-hash",
+        )
+
+
+def test_equal_id_unequal_payload_tripwire_fires():
+    """NEXT.md D2: two artifacts with the same artifact_id but different bodies — the
+    unbumped-producer-change signature — must raise, not silently overwrite."""
+    from open_us_law_coverage.derived import (
+        DocumentClass,
+        PayloadCollisionError,
+        check_payload_collisions,
+    )
+
+    good = _classification(DocumentClass.STATUTE)
+    # Same provenance (=> same artifact_id) but a different conclusion body: exactly
+    # what a deterministic producer emits if its logic changes without a version bump.
+    drifted = dataclasses.replace(good, document_class=DocumentClass.REGULATION, payload_hash="")
+    assert good.provenance.artifact_id == drifted.provenance.artifact_id
+    assert good.payload_hash != drifted.payload_hash
+
+    check_payload_collisions([good, good])  # same body twice is fine
+    with pytest.raises(PayloadCollisionError):
+        check_payload_collisions([good, drifted])
