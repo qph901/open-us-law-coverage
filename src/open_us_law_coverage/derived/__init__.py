@@ -60,12 +60,15 @@ from .identity import (
 )
 from .identity_strategies import (
     IdentityMember,
+    act_id_prefix,
     cfr_identity_group,
     constitution_identity,
     corpus_of_source_file,
     federal_register_document_group,
     identity_member,
+    regulations_identity_group,
     resolve_single_record_identity,
+    state_regulation_identity_group,
     state_statute_act_id_identity,
     usc_act_id_identity,
 )
@@ -119,12 +122,15 @@ __all__ = [
     "IdentityMember",
     "identity_member",
     "corpus_of_source_file",
+    "act_id_prefix",
     "usc_act_id_identity",
     "state_statute_act_id_identity",
     "constitution_identity",
     "resolve_single_record_identity",
     "cfr_identity_group",
     "federal_register_document_group",
+    "state_regulation_identity_group",
+    "regulations_identity_group",
     # classification
     "AuthorityRole",
     "DocumentClass",

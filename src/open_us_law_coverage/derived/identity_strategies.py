@@ -66,8 +66,14 @@ STATE_STATUTE_ACT_ID_V1 = "state_statute_act_id_v1"
 CONSTITUTION_ACT_ID_V1 = "constitution_act_id_v1"
 CFR_IDENTITY_V1 = "cfr_identity_v1"
 FEDERAL_REGISTER_DOCUMENT_V1 = "federal_register_document_v1"
+STATE_REGULATION_V1 = "state_regulation_v1"
 
 STRATEGY_VERSION = "1"
+
+
+def act_id_prefix(act_id: str | None) -> str:
+    """The namespace prefix of an ``act_id`` (``CFR_T17_..`` -> ``CFR``)."""
+    return (act_id or "").split("_", 1)[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,3 +381,43 @@ def federal_register_document_group(
             "document; do not compose"
         ),
     )
+
+
+def state_regulation_identity_group(
+    members: Sequence[IdentityMember],
+) -> SourceIdentityResult:
+    """``state_regulation_v1`` — rows sharing a ``STATE_*`` **regulation** ``act_id``.
+
+    The full-snapshot manifest (C.3) surfaced that ``act_id`` collisions are **not**
+    federal-only: state administrative-code corpora (OH, IL, KY, MD, ME, MN) also
+    repeat an ``act_id`` across rows. Like CFR (and unlike FR), these are a
+    ``provisional`` multi-**segment** candidate — pieces of one codified rule section
+    that assembly/anatomy must confirm before any text is composed. Same abstention
+    discipline: identity groups, it does not concatenate.
+    """
+    return _regulations_identity_group(
+        members,
+        strategy_name=STATE_REGULATION_V1,
+        multi_scope=IdentityScope.SEGMENT,
+        multi_status=IdentityStatus.PROVISIONAL,
+        multi_evidence_detail=(
+            "provisional multi-segment state-regulation candidate; assembly to confirm"
+        ),
+    )
+
+
+def regulations_identity_group(
+    members: Sequence[IdentityMember],
+) -> SourceIdentityResult:
+    """Route a regulations collision group to its strategy by ``act_id`` namespace:
+    ``FR_*`` -> Federal Register (ambiguous), ``CFR_*`` -> codified CFR (provisional),
+    anything else (``STATE_*`` administrative codes) -> state regulation (provisional).
+    """
+    if not members:
+        raise ValueError("a regulations identity group needs at least one member")
+    prefix = act_id_prefix(members[0].act_id)
+    if prefix == "FR":
+        return federal_register_document_group(members)
+    if prefix == "CFR":
+        return cfr_identity_group(members)
+    return state_regulation_identity_group(members)

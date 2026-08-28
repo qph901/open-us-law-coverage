@@ -22,6 +22,7 @@ from open_us_law_coverage.derived import (
     check_payload_collisions,
     federal_register_document_group,
     identity_member,
+    regulations_identity_group,
     resolve_single_record_identity,
 )
 from open_us_law_coverage.derived.assembly import (
@@ -178,3 +179,32 @@ def test_single_row_regulation_act_id_is_degenerate_11():
     assert result.group.member_source_record_ids == ("only",)
     assert result.group.identity_status == IdentityStatus.RESOLVED
     assert result.members[0].segment_order_method == SegmentOrderMethod.SINGLE_RECORD
+
+
+def _state_reg_member(rid: str, ordinal: int) -> IdentityMember:
+    return IdentityMember(
+        source_record_id=rid,
+        act_id="STATE_OH_ADC_117_3_11",
+        state="OH",
+        corpus="regulations",
+        document_type="regulation",
+        raw_text_hash=f"h{ordinal}",
+        physical_row_ordinal=ordinal,
+    )
+
+
+def test_router_dispatches_by_namespace():
+    """C.3 finding: collisions are not federal-only. The router sends CFR_/FR_/STATE_
+    regulation groups to the right strategy."""
+    cfr = regulations_identity_group([_cfr_member("a", 1, "h"), _cfr_member("b", 2, "g")])
+    fr = regulations_identity_group([_fr_member("a", 1, "h"), _fr_member("b", 2, "g")])
+    state = regulations_identity_group(
+        [_state_reg_member("a", 1), _state_reg_member("b", 2)]
+    )
+    assert cfr.group.strategy_name == "cfr_identity_v1"
+    assert cfr.group.identity_status == IdentityStatus.PROVISIONAL
+    assert fr.group.strategy_name == "federal_register_document_v1"
+    assert fr.group.identity_status == IdentityStatus.AMBIGUOUS
+    assert state.group.strategy_name == "state_regulation_v1"
+    assert state.group.identity_status == IdentityStatus.PROVISIONAL
+    assert state.group.identity_scope == IdentityScope.SEGMENT
