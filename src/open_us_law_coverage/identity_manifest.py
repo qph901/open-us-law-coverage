@@ -59,7 +59,6 @@ from .derived import detect_duplicate_rows, is_duplicate_row
 from .derived.identity import IdentityStatus
 from .derived.identity_strategies import (
     IdentityMember,
-    act_id_prefix,
     corpus_of_source_file,
     regulations_identity_group,
 )
@@ -91,7 +90,9 @@ class CollisionDeepDive:
     multi_groups_by_strategy: Counter = field(default_factory=Counter)
     multi_rows_by_strategy: Counter = field(default_factory=Counter)
     within_group_duplicate_rows: int = 0
-    single_member_groups: int = 0  # 1:1 groups within the collision files
+    # Structural count from the cheap sizing pass. No producer artifact is implied.
+    structural_single_member_groups: int = 0
+    # Outcomes only for groups over which a real identity artifact was constructed.
     status_groups: Counter = field(default_factory=Counter)  # by identity_status
     group_size_hist: Counter = field(default_factory=Counter)  # size -> n groups
     max_group_size: int = 0
@@ -187,17 +188,17 @@ def add_collision_file(
     counts: dict[str, int],
 ) -> None:
     """Fold one collision file into the aggregate deep-dive: run the real router +
-    within-group duplicate detection over its colliding groups, and count its
-    single-member groups from the cheap sizing pass."""
+    within-group duplicate detection over its colliding groups, and separately count
+    its structural single-member groups from the cheap sizing pass."""
     dive.collision_files.append(path.name)
 
-    # Single-member groups are 1:1 (resolved) — counted from the sizing pass.
+    # Structural sizing only. These groups are not producer outcomes because this
+    # deep-dive intentionally constructs artifacts only for colliding groups.
     for size in counts.values():
         dive.group_size_hist[size] += 1
         dive.max_group_size = max(dive.max_group_size, size)
         if size == 1:
-            dive.single_member_groups += 1
-            dive.status_groups[str(IdentityStatus.RESOLVED)] += 1
+            dive.structural_single_member_groups += 1
 
     for act_id, members in _colliding_members(con, path, snapshot).items():
         size = len(members)
@@ -207,7 +208,7 @@ def add_collision_file(
         dive.multi_rows_by_strategy[strategy] += size
         dive.status_groups[str(result.group.identity_status)] += 1
         # duplicate_row WITHIN this group only (never across groups).
-        dup = detect_duplicate_rows(members)
+        dup = detect_duplicate_rows(result.group, members)
         dive.within_group_duplicate_rows += sum(
             1 for a in dup.annotations if is_duplicate_row(a)
         )
@@ -324,7 +325,7 @@ def render_report(res: ManifestResult) -> str:
     L.append(f"- **{_pct(total_single, res.total_groups)}** of all groups are "
              f"single-member (1:1 source→document); multi-member groups: "
              f"**{res.total_groups - total_single:,}**.")
-    L.append(f"- collision files (any `act_id` repeats): "
+    L.append("- collision files (any `act_id` repeats): "
              + (", ".join(f"`{f}`" for f in res.collision_files) or "none"))
     L.append("")
 
@@ -345,10 +346,11 @@ def render_report(res: ManifestResult) -> str:
         L.append("")
         L.append(f"- **within-group duplicate rows** (real `detect_duplicate_rows`, "
                  f"per group): **{d.within_group_duplicate_rows:,}**.")
-        L.append(f"- single-member (1:1) groups within the collision files: "
-                 f"**{d.single_member_groups:,}**.")
+        L.append(f"- structural single-member groups within the collision files "
+                 f"(sizing only; no artifact constructed): "
+                 f"**{d.structural_single_member_groups:,}**.")
         L.append(f"- **max group size**: {d.max_group_size}.")
-        L.append("- group `identity_status`: "
+        L.append("- produced multi-member group `identity_status`: "
                  + ", ".join(f"`{k}`:{v:,}" for k, v in sorted(d.status_groups.items())))
         total_reg_groups = sum(d.status_groups.values())
         ambiguous = d.status_groups.get(str(IdentityStatus.AMBIGUOUS), 0)
@@ -356,13 +358,15 @@ def render_report(res: ManifestResult) -> str:
         resolved = d.status_groups.get(str(IdentityStatus.RESOLVED), 0)
         # Reported separately — provisional and ambiguous are *different* safe
         # non-composition outcomes, not one merged "ambiguity rate" (M1A.5 review P7).
-        L.append(f"- outcome split (of groups in collision files): "
+        L.append(f"- producer outcome split (only groups with a constructed identity "
+                 f"artifact): "
                  f"**resolved** (1:1) {_pct(resolved, total_reg_groups)}, "
                  f"**provisional** (multi-segment candidate, assembly to confirm) "
                  f"{_pct(provisional, total_reg_groups)}, "
                  f"**ambiguous** (FR numbering bucket, never composed) "
                  f"{_pct(ambiguous, total_reg_groups)}. All three are safe "
-                 f"non-fabrication outcomes; only `resolved` is a committed 1:1 identity.")
+                 f"non-fabrication outcomes; only `resolved` is a committed 1:1 identity. "
+                 f"Structural singleton counts are excluded from this denominator.")
         L.append("")
         L.append("### Group-size distribution (collision files)")
         L.append("")

@@ -3,7 +3,9 @@
 A citation detection / parsing / normalization / resolution subsystem over the
 [`vaquill/open-us-law`](https://huggingface.co/datasets/vaquill/open-us-law)
 dataset (snapshot **v2026.08**), commissioned on the US Code. See
-[PROPOSAL.md](PROPOSAL.md) for the full design and milestones.
+[PROPOSAL.md](PROPOSAL.md) for the full design and milestones. Project decisions
+are ordered by [PRIORITIES.md](PRIORITIES.md): law coverage first, retrieval time
+second.
 
 ## Status
 
@@ -67,8 +69,8 @@ dataset (snapshot **v2026.08**), commissioned on the US Code. See
 - **M1A.5 — shared derived-artifact foundation: closed, with concrete identity
   producers.** The interpretation-layer contracts in
   [`src/open_us_law_coverage/derived/`](src/open_us_law_coverage/derived/):
-  `DerivedArtifactProvenance` as a multi-input DAG (content-addressed
-  `artifact_id`, `generated_at` excluded) **plus a `payload_hash` semantic content
+  `DerivedArtifactProvenance` as a multi-input DAG (`artifact_id` is the stable
+  derivation address, `generated_at` excluded) **plus a `payload_hash` semantic content
   address and the equal-id/unequal-payload tripwire**; identity as a
   `SourceIdentityGroup` (content-addressed by the complete member set) + per-member
   `SourceIdentityMemberAnnotation` (the `DuplicateScope` analogue — groups only,
@@ -121,6 +123,18 @@ uv sync
 uv run python scripts/download.py            # M0 sample → data/v2026.08/
 ```
 
+The installed command exposes the maintained audit entry points:
+
+```bash
+uv run open-us-law-coverage --help
+uv run open-us-law-coverage ca-probe --help
+uv run open-us-law-coverage identity-manifest --help
+```
+
+The project is licensed under Apache-2.0. Legal text in the upstream dataset is
+public-domain government material; the dataset's compilation has its own CC BY 4.0
+terms.
+
 ## Reproduce the M0 report
 
 ```bash
@@ -145,12 +159,15 @@ The recon harness accepts any file glob, so it can be pointed at the full
   assembly contracts; and the concrete identity-strategy producers in
   `identity_strategies.py`).
 - `src/open_us_law_coverage/identity_manifest.py` — M1A.5 C.3 deterministic
-  full-snapshot identity manifest (DuckDB-streamed; real producers over every file).
+  full-snapshot identity manifest (DuckDB-streamed structural scan of every file;
+  real producers over each colliding identity group).
 - `src/open_us_law_coverage/hierarchy.py` — M0.5B2 hierarchy stress test
   (breadcrumb → normalized `HierarchyNode[]` / `StructuralPath` + topology report).
 - `src/open_us_law_coverage/ca_probe.py` — M0.5B3 CA abstraction-falsification
   probe (runs the built artifact types over CA; emits the interface-change list).
 - `tests/` — golden-fixture acceptance suite (`uv run pytest`).
 - `scripts/download.py` — gated download + SHA-256 verification.
+- `PRIORITIES.md` — authoritative product priorities and their measurement rules.
+- `oracles/` — machine-validated corpus currency and oracle-edition registry.
 - `reports/` — generated reports (committed).
 - `data/` — downloaded snapshots (gitignored; reproduce via `scripts/download.py`).

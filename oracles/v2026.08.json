@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "snapshot": "v2026.08",
+  "dataset_revision": "16bc9a159faabea4af9db08f1b33832e80e85b2d",
+  "repository_commit_date": "2026-08-26",
+  "repository_commit_date_is_content_cutoff": false,
+  "oracle_editions": [
+    {
+      "oracle_edition": "oracle:uslm:usc-pl-118-274-not-118-159:2025-01-06",
+      "kind": "uslm",
+      "edition_date": "2025-01-06",
+      "source_url": "https://uscode.house.gov/download/releasepoints/us/pl/118/274not159/usc-rp%40118-274not159.htm",
+      "local_path": null,
+      "sha256": null
+    },
+    {
+      "oracle_edition": "oracle:ecfr:point-in-time:2026-08-26",
+      "kind": "ecfr",
+      "edition_date": "2026-08-26",
+      "source_url": "https://www.ecfr.gov/api/versioner/v1/full/2026-08-26/title-{title}.xml",
+      "local_path": null,
+      "sha256": null
+    }
+  ],
+  "corpora": [
+    {
+      "corpus": "us_federal_statutes",
+      "snapshot_content_cutoff": "2025-01-06",
+      "cutoff_status": "established",
+      "basis": "All 54,853 snapshot rows have year=2024 and source URLs in the official GovInfo USCODE-2024 collection. GovInfo's content metadata for that edition states 'Laws In Effect As Of Date: January 6, 2025'. This corpus evidence, not the dataset repository's 2026-08-26 commit date, establishes the cutoff. The aligned OLRC USLM release point is Public Law 118-274 dated 2025-01-06, except 118-159; M0.5B1 must retain that exception when scoring textual alignment.",
+      "comparison_oracle_edition": "oracle:uslm:usc-pl-118-274-not-118-159:2025-01-06",
+      "residual_skew_days": 0
+    },
+    {
+      "corpus": "us_federal_regulations",
+      "snapshot_content_cutoff": null,
+      "cutoff_status": "unresolved",
+      "basis": "No global legal-content cutoff can be established from this mixed corpus. Its 220,018 CFR rows carry source years 2024 (511), 2025 (6,153), and 2026 (213,354) and use moving /current/ eCFR URLs; its 362,036 Federal Register rows carry publication years 1994-2026. A row year is not a legal-content cutoff. The 2026-08-26 repository commit date is publication metadata and is not used as a cutoff. CFR-A1 must compare the CFR subset with the point-in-time eCFR candidate and report residual skew separately; Federal Register rows remain non-composable historical documents.",
+      "comparison_oracle_edition": "oracle:ecfr:point-in-time:2026-08-26",
+      "residual_skew_days": null
+    }
+  ]
+}

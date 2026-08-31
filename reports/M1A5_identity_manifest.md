@@ -40,10 +40,10 @@ Aggregated across every collision file: `us_federal_regulations.parquet`, `us_il
 | `state_regulation_v1` | 1,194 | 2,805 |
 
 - **within-group duplicate rows** (real `detect_duplicate_rows`, per group): **2,626**.
-- single-member (1:1) groups within the collision files: **354,354**.
+- structural single-member groups within the collision files (sizing only; no artifact constructed): **354,354**.
 - **max group size**: 14.
-- group `identity_status`: `ambiguous`:165,067, `provisional`:2,277, `resolved`:354,354
-- outcome split (of groups in collision files): **resolved** (1:1) 67.92%, **provisional** (multi-segment candidate, assembly to confirm) 0.44%, **ambiguous** (FR numbering bucket, never composed) 31.64%. All three are safe non-fabrication outcomes; only `resolved` is a committed 1:1 identity.
+- produced multi-member group `identity_status`: `ambiguous`:165,067, `provisional`:2,277
+- producer outcome split (only groups with a constructed identity artifact): **resolved** (1:1) 0.00%, **provisional** (multi-segment candidate, assembly to confirm) 1.36%, **ambiguous** (FR numbering bucket, never composed) 98.64%. All three are safe non-fabrication outcomes; only `resolved` is a committed 1:1 identity. Structural singleton counts are excluded from this denominator.
 
 ### Group-size distribution (collision files)
 

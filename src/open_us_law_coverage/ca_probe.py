@@ -37,14 +37,12 @@ from pathlib import Path
 from typing import Sequence
 
 from .derived import (
-    DocumentClass,
     classify_source_record,
     detect_duplicate_rows,
     is_duplicate_row,
     resolve_single_record_identity,
 )
 from .derived.assembly import assemble_trivial_single_record
-from .derived.identity import IdentityStatus
 from .hierarchy import (
     RoundTrip,
     parse_breadcrumb,
@@ -135,7 +133,7 @@ def analyze_ca(path: str | Path, snapshot_version: str) -> CaProbeResult:
         # duplicate_row *within the identity group* (real detect_duplicate_rows). The
         # group is this one record, so within-group duplicates are 0 by construction —
         # the load-bearing contrast with the corpus-wide content duplication below.
-        dup = detect_duplicate_rows([rec])
+        dup = detect_duplicate_rows(identity.group, [rec])
         res.within_group_duplicate_rows += sum(
             1 for a in dup.annotations if is_duplicate_row(a)
         )
@@ -265,10 +263,10 @@ def render_report(res: CaProbeResult, snapshot: str) -> str:
              f"(a single-member group has no sibling to duplicate — the contrast below is the point)")
     L.append(f"- breadcrumb parsed: {res.parse_ok:,} ({_pct(res.parse_ok, res.rows)}), "
              f"failed: {res.parse_fail:,}")
-    L.append(f"- act_status: " + ", ".join(f"`{k}`:{v:,}" for k, v in res.status.most_common()))
-    L.append(f"- hierarchy kinds: "
+    L.append("- act_status: " + ", ".join(f"`{k}`:{v:,}" for k, v in res.status.most_common()))
+    L.append("- hierarchy kinds: "
              + ", ".join(f"`{k}`:{v:,}" for k, v in sorted(res.kind_vocab.items())))
-    L.append(f"- leaf kinds: " + ", ".join(f"`{k}`:{v:,}" for k, v in sorted(res.leaf_kinds.items())))
+    L.append("- leaf kinds: " + ", ".join(f"`{k}`:{v:,}" for k, v in sorted(res.leaf_kinds.items())))
     L.append(f"- non-numeric leaf identifiers (e.g. `73c`, `GENERAL PROVISIONS`): "
              f"**{res.nonnumeric_leaf_ids:,}** — carried as strings, no distortion")
     rt = ", ".join(f"{k}:{res.roundtrip[k]:,}" for k in RoundTrip if res.roundtrip[k])
@@ -283,7 +281,7 @@ def render_report(res: CaProbeResult, snapshot: str) -> str:
              f"**{res.content_dup_hashes:,}** text hashes spanning **{res.content_dup_rows:,}** rows "
              f"(all with distinct `act_id` + distinct `StructuralPath`).")
     if res.content_dup_example:
-        L.append(f"- example — identical text, distinct provisions: "
+        L.append("- example — identical text, distinct provisions: "
                  + ", ".join(f"`{a}`" for a in res.content_dup_example))
     L.append("- Consequence: `duplicate_row` is a **content** conclusion, not an identity one; "
              "it must be scoped to the identity group (CA yields **0** within-group), and never "

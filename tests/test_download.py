@@ -7,6 +7,9 @@ commit SHA and that SHA — never the raw ref — is what the tool treats as res
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 import scripts.download as dl
@@ -77,7 +80,7 @@ def test_pinned_snapshot_resolves_without_explicit_arg(monkeypatch):
 
 
 def test_v2026_08_is_pinned_to_an_immutable_commit_sha():
-    """NEXT.md D4: the snapshot is pinned to a full commit SHA (established by
+    """M1A.5 D4: the snapshot is pinned to a full commit SHA (established by
     checksum-matching all staged files against the commit's SHA256SUMS.json)."""
     pin = dl.SNAPSHOT_REVISIONS.get("v2026.08")
     assert pin is not None and dl._COMMIT_SHA_RE.match(pin)
@@ -85,10 +88,7 @@ def test_v2026_08_is_pinned_to_an_immutable_commit_sha():
     assert dl.resolve_revision("v2026.08", None, resolver=lambda r: pin) == pin
 
 
-# --- NEXT.md D4 / C.1: verify() hardening + checksum-based pin ----------------
-
-import hashlib
-import json
+# --- M1A.5 D4 / C.1: verify() hardening + checksum-based pin ------------------
 
 
 def _stage(tmp_path, snapshot, files, manifest_entries):

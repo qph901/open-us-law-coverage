@@ -14,3 +14,10 @@ data/
 
 # DuckDB spill files (identity_collisions default --temp-dir)
 .duckdb_spill/
+
+# Test, type-check, and lint caches
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -34,6 +34,7 @@ from .provenance import (
     DerivedArtifactProvenance,
     Evidence,
     assign_payload_hash,
+    require_enum_member,
     source_record_inputs,
 )
 
@@ -114,6 +115,8 @@ class DocumentClassificationAnnotation:
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        require_enum_member(self.document_class, DocumentClass, "document_class")
+        require_enum_member(self.authority_role, AuthorityRole, "authority_role")
         if (
             self.provenance.artifact_type
             != ArtifactType.DOCUMENT_CLASSIFICATION_ANNOTATION
@@ -128,6 +131,11 @@ class DocumentClassificationAnnotation:
             raise ValueError(
                 "classification provenance must name exactly one source_record input, "
                 f"got {self.provenance.source_record_ids()}"
+            )
+        if len(self.provenance.inputs) != 1:
+            raise ValueError(
+                "classification provenance inputs must be exactly one "
+                f"source_record edge, got {self.provenance.inputs}"
             )
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be in [0, 1], got {self.confidence!r}")
@@ -163,7 +171,6 @@ def classify(
     keeps **both** signals as evidence — never a confident guess.
     """
     prefix = act_id_prefix(act_id)
-    dt_evidence = Evidence("document_type", f"document_type={document_type!r}")
     prefix_evidence = Evidence("act_id_prefix", f"act_id prefix={prefix!r}")
 
     mapped = _DOCUMENT_TYPE_CLASS.get(document_type) if document_type else None
@@ -260,7 +267,7 @@ def classify_source_record(
     to the record's ``source_record_id`` (never to any identity key). Duck-typed on
     ``.source_record_id`` and ``.column(...)``, so it needs no import of the
     immutable-core module at runtime. The producer version is the module constant,
-    **not** caller-overridable (NEXT.md A.5).
+    **not** caller-overridable (M1A.5 closure A.5).
     """
     document_type = record.column("document_type")
     act_id = record.column("act_id")

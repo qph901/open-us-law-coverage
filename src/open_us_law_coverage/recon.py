@@ -188,7 +188,6 @@ def analyze_file(path: Path) -> FileReport:
     df = pl.read_parquet(path, columns=nontext)
     n = df.height
     str_cols = [c for c in nontext if schema[c] == pl.String]
-    xref_cols = [c for c in ("cross_references_usc", "cross_references_cfr", "public_laws_referenced") if c in cols]
     present_hier = [c for c in HIERARCHY_FIELDS if c in cols]
 
     # ---- bounded scan of the large text column ----
@@ -260,9 +259,11 @@ def analyze_file(path: Path) -> FileReport:
     if "word_count" in cols:
         wc = df.select(pl.col("word_count").fill_null(0).alias("wc"))["wc"]
         word_count_pct = {
-            "min": float(wc.min() or 0), "p50": float(wc.median() or 0),
-            "p95": float(wc.quantile(0.95) or 0), "max": float(wc.max() or 0),
-            "mean": float(wc.mean() or 0),
+            "min": float(wc.min() or 0),  # type: ignore[arg-type]
+            "p50": float(wc.median() or 0),  # type: ignore[arg-type]
+            "p95": float(wc.quantile(0.95) or 0),
+            "max": float(wc.max() or 0),  # type: ignore[arg-type]
+            "mean": float(wc.mean() or 0),  # type: ignore[arg-type]
         }
     else:
         word_count_pct = {}
@@ -321,7 +322,7 @@ def render_report(reports: list[FileReport], snapshot: str) -> str:
     lines: list[str] = []
     w = lines.append
 
-    w(f"# M0 — Dataset Reconnaissance Report\n")
+    w("# M0 — Dataset Reconnaissance Report\n")
     w(f"**Snapshot:** `{snapshot}`  ")
     w(f"**Files analyzed:** {len(reports)} (representative sample)  ")
     w(f"**Total rows analyzed:** {sum(r.n_rows for r in reports):,}\n")
@@ -441,7 +442,7 @@ def render_report(reports: list[FileReport], snapshot: str) -> str:
     w("## 5. Lineage cases (statuses where act_id is expected to break)\n")
     w(
         "These are the rows that Tier-3 lineage inference must handle. `act_id` for a "
-        f"`renumbered`/`transferred`/etc. row still encodes *its own* number; there is no "
+        "`renumbered`/`transferred`/etc. row still encodes *its own* number; there is no "
         "column pointing at the predecessor/successor, so the link must come from text-hash "
         "similarity, hierarchy, section-number transition, and status flags.\n"
     )
@@ -630,7 +631,10 @@ def render_summary(reports: list[FileReport], snapshot: str) -> str:
             diff_extra = set(cols) - base
             diff_missing = base - set(cols)
             if diff_extra or diff_missing:
-                w(f"  - extra: {sorted(diff_extra) or '—'}; missing: {sorted(diff_missing) or '—'}")
+                w(
+                    f"  - extra: {sorted(map(str, diff_extra)) or '—'}; "
+                    f"missing: {sorted(map(str, diff_missing)) or '—'}"
+                )
         w("")
 
     # --- crosswalk field across all ---

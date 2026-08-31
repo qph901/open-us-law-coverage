@@ -19,6 +19,7 @@ from open_us_law_coverage.identity_manifest import (
     _connect,
     add_collision_file,
     build_manifest,
+    render_report,
     scan_group_sizes,
 )
 from open_us_law_coverage.source_record import EXPECTED_COLUMNS
@@ -151,10 +152,11 @@ def test_collision_deep_dive_runs_real_producers(con, regs_parquet: Path):
     # the byte-identical CFR pair are both flagged within the group; the FR rows and
     # the distinct CFR segment are not.
     assert dive.within_group_duplicate_rows == 2
-    # statuses: CFR multi -> provisional, FR multi -> ambiguous, 1:1 CFR -> resolved.
+    # Producer outcomes include only groups for which artifacts were constructed.
     assert dive.status_groups["provisional"] == 1
     assert dive.status_groups["ambiguous"] == 1
-    assert dive.status_groups["resolved"] == 1
+    assert dive.status_groups["resolved"] == 0
+    assert dive.structural_single_member_groups == 1
     assert dive.max_group_size == 3
 
 
@@ -185,7 +187,8 @@ def test_state_regulation_collisions_route_to_state_strategy(con, tmp_path: Path
     assert dive.multi_groups_by_strategy["state_regulation_v1"] == 1
     assert dive.multi_rows_by_strategy["state_regulation_v1"] == 2
     assert dive.status_groups["provisional"] == 1
-    assert dive.status_groups["resolved"] == 1  # the solo STATE_OH_ADC_999_1
+    assert dive.status_groups["resolved"] == 0
+    assert dive.structural_single_member_groups == 1
 
 
 def test_build_manifest_detects_the_collision_file(regs_parquet: Path, tmp_path: Path):
@@ -198,6 +201,11 @@ def test_build_manifest_detects_the_collision_file(regs_parquet: Path, tmp_path:
     assert reg.multi_member_groups == 2  # the CFR-3 and FR-2 groups
     assert reg.single_member_groups == 1
     assert reg.max_group_size == 3
+
+    report = render_report(res)
+    assert "Structural singleton counts are excluded from this denominator" in report
+    assert "`resolved`:1" not in report
+    assert "`ambiguous`:1, `provisional`:1" in report
 
 
 def test_all_11_file_has_no_collisions_and_no_deep_dive(fixture_parquet: Path, tmp_path: Path):

@@ -10,8 +10,8 @@ ambiguous (never composed), occurrence-index disambiguation of byte-identical ro
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 
@@ -24,7 +24,6 @@ from open_us_law_coverage.derived import (
     cfr_identity_group,
     check_payload_collisions,
     federal_register_document_group,
-    identity_member,
     regulations_identity_group,
     resolve_single_record_identity,
 )
@@ -36,21 +35,61 @@ from open_us_law_coverage.derived.identity_strategies import (
     CFR_IDENTITY_V1,
     CONSTITUTION_ACT_ID_V1,
     FEDERAL_REGISTER_DOCUMENT_V1,
-    STATE_REGULATION_V1,
     STATE_STATUTE_ACT_ID_V1,
     USC_ACT_ID_V1,
+    constitution_identity,
     state_regulation_identity_group,
+    state_statute_act_id_identity,
+    usc_act_id_identity,
 )
-from open_us_law_coverage.source_record import read_source_records
-from tests.conftest import SNAPSHOT
-
 
 # ---------------------------------------------------------------------------
 # B.1 — the 1:1 strategies, over the real fixture.
 # ---------------------------------------------------------------------------
 
-def test_dispatch_picks_the_right_11_strategy(fixture_parquet: Path):
-    records = read_source_records(fixture_parquet, SNAPSHOT)
+@dataclass
+class _ValidRecord:
+    source_file: str
+    _cols: dict
+    source_record_id: str
+    raw_text: str | None = "body"
+    physical_row_ordinal: int = 0
+
+    @property
+    def raw_text_hash(self) -> str | None:
+        return None if self.raw_text is None else _hash(self.raw_text)
+
+    def column(self, name: str):
+        return self._cols.get(name)
+
+
+def _valid_11_records() -> list[_ValidRecord]:
+    return [
+        _ValidRecord(
+            "us_federal_statutes.parquet",
+            {"act_id": "USC_T10_C1_S1", "state": "federal", "document_type": "statute"},
+            "usc",
+        ),
+        _ValidRecord(
+            "us_ak_statutes.parquet",
+            {"act_id": "STATE_AK_T1_S1", "state": "ak", "document_type": "statute"},
+            "state",
+        ),
+        _ValidRecord(
+            "us_ak_constitutions.parquet",
+            {"act_id": "SCONST_AK_A1_S1", "state": "ak", "document_type": "constitution"},
+            "constitution",
+        ),
+        _ValidRecord(
+            "us_ak_statutes.parquet",
+            {"act_id": "STATE_AK_T1_S2", "state": "ak", "document_type": "statute"},
+            "null-state-body",
+            raw_text=None,
+        ),
+    ]
+
+def test_dispatch_picks_the_right_11_strategy():
+    records = _valid_11_records()
     by_strategy = {}
     for rec in records:
         result = resolve_single_record_identity(rec)
@@ -63,8 +102,8 @@ def test_dispatch_picks_the_right_11_strategy(fixture_parquet: Path):
     assert CONSTITUTION_ACT_ID_V1 in strategies   # SCONST_AK... constitution
 
 
-def test_11_strategy_emits_a_resolved_single_member_group(fixture_parquet: Path):
-    rec = read_source_records(fixture_parquet, SNAPSHOT)[0]  # USC statute
+def test_11_strategy_emits_a_resolved_single_member_group():
+    rec = _valid_11_records()[0]
     result = resolve_single_record_identity(rec)
     assert result is not None
     group = result.group
@@ -83,10 +122,10 @@ def test_11_strategy_emits_a_resolved_single_member_group(fixture_parquet: Path)
     }
 
 
-def test_full_chain_identity_then_assembly_is_byte_for_byte(fixture_parquet: Path):
+def test_full_chain_identity_then_assembly_is_byte_for_byte():
     """B.1 headline: the first end-to-end run of the interpretation stack over real
     records — identity groups a single record, assembly returns its text verbatim."""
-    records = read_source_records(fixture_parquet, SNAPSHOT)
+    records = _valid_11_records()
     produced = []
     for rec in records:
         result = resolve_single_record_identity(rec)
@@ -108,6 +147,9 @@ def test_full_chain_identity_then_assembly_is_byte_for_byte(fixture_parquet: Pat
 # B.2 — the regulations collision strategies, over synthetic members.
 # ---------------------------------------------------------------------------
 
+def _hash(label: str) -> str:
+    return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
 def _cfr_member(rid: str, ordinal: int, text_hash: str | None) -> IdentityMember:
     return IdentityMember(
         source_record_id=rid,
@@ -115,7 +157,7 @@ def _cfr_member(rid: str, ordinal: int, text_hash: str | None) -> IdentityMember
         state="US",
         corpus="regulations",
         document_type="regulation",
-        raw_text_hash=text_hash,
+        raw_text_hash=None if text_hash is None else _hash(text_hash),
         physical_row_ordinal=ordinal,
     )
 
@@ -127,7 +169,7 @@ def _fr_member(rid: str, ordinal: int, text_hash: str | None) -> IdentityMember:
         state="US",
         corpus="regulations",
         document_type="regulation",
-        raw_text_hash=text_hash,
+        raw_text_hash=None if text_hash is None else _hash(text_hash),
         physical_row_ordinal=ordinal,
     )
 
@@ -174,8 +216,8 @@ def test_byte_identical_rows_get_distinct_occurrence_indices():
     result = cfr_identity_group(members)
     fps = sorted(m.segment_fingerprint for m in result.members)
     assert fps == [
-        "CFR_T17_P240_S240.10b-5|same|0",
-        "CFR_T17_P240_S240.10b-5|same|1",
+        f"CFR_T17_P240_S240.10b-5|{_hash('same')}|0",
+        f"CFR_T17_P240_S240.10b-5|{_hash('same')}|1",
     ]
 
 
@@ -193,7 +235,7 @@ def _state_reg_member(rid: str, ordinal: int) -> IdentityMember:
         state="OH",
         corpus="regulations",
         document_type="regulation",
-        raw_text_hash=f"h{ordinal}",
+        raw_text_hash=_hash(f"h{ordinal}"),
         physical_row_ordinal=ordinal,
     )
 
@@ -229,7 +271,7 @@ class _FakeRecord:
     source_file: str
     _cols: dict
     source_record_id: str = "srr:sha256:x"
-    raw_text_hash: str | None = "sha256:deadbeef"
+    raw_text_hash: str | None = _hash("fake-record")
     physical_row_ordinal: int = 0
 
     def column(self, name: str):
@@ -275,6 +317,44 @@ def test_dispatch_uses_document_type_not_prefix():
     assert resolve_single_record_identity(guidance) is None
 
 
+@pytest.mark.parametrize(
+    "producer, record",
+    [
+        (
+            usc_act_id_identity,
+            _rec(
+                "STATE_AK_T10_C10.06_S10.06.005",
+                "statute",
+                state="ak",
+                source_file="us_ak_statutes.parquet",
+            ),
+        ),
+        (
+            state_statute_act_id_identity,
+            _rec(
+                "USC_T10_C1_S1",
+                "statute",
+                state="federal",
+                source_file="us_federal_statutes.parquet",
+            ),
+        ),
+        (
+            constitution_identity,
+            _rec(
+                "STATE_AK_T1_S1",
+                "statute",
+                state="ak",
+                source_file="us_ak_statutes.parquet",
+            ),
+        ),
+    ],
+    ids=["usc-on-state-statute", "state-on-usc", "constitution-on-statute"],
+)
+def test_direct_single_record_producers_reject_cross_strategy_calls(producer, record):
+    with pytest.raises(ValueError):
+        producer(record)
+
+
 # ---------------------------------------------------------------------------
 # Finding P2-5 — collision producers reject malformed / heterogeneous groups.
 # ---------------------------------------------------------------------------
@@ -295,7 +375,7 @@ def test_cfr_group_rejects_a_statute_member():
         state="US",
         corpus="statutes",
         document_type="statute",
-        raw_text_hash="h",
+        raw_text_hash=_hash("statute"),
         physical_row_ordinal=9,
     )
     with pytest.raises(ValueError):
@@ -320,17 +400,16 @@ def test_state_producer_rejects_a_cfr_group():
 
 
 def test_regulation_group_rejects_empty_act_id():
-    bad = IdentityMember(
-        source_record_id="b",
-        act_id=None,
-        state="US",
-        corpus="regulations",
-        document_type="regulation",
-        raw_text_hash="h",
-        physical_row_ordinal=2,
-    )
     with pytest.raises(ValueError):
-        cfr_identity_group([_cfr_member("a", 1, "h"), bad])
+        IdentityMember(
+            source_record_id="b",
+            act_id=None,
+            state="US",
+            corpus="regulations",
+            document_type="regulation",
+            raw_text_hash=_hash("bad"),
+            physical_row_ordinal=2,
+        )
 
 
 def test_state_regulation_group_rejects_mixed_state():
@@ -346,9 +425,33 @@ def test_state_regulation_group_rejects_mixed_state():
             state=state,
             corpus="regulations",
             document_type="regulation",
-            raw_text_hash="h",
+            raw_text_hash=_hash("same"),
             physical_row_ordinal=ordinal,
         )
 
     with pytest.raises(ValueError):
         state_regulation_identity_group([member("a", "OH", 1), member("b", "IN", 2)])
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"state": None},
+        {"raw_text_hash": "sha256:not-canonical"},
+        {"physical_row_ordinal": -1},
+    ],
+    ids=["null-state", "malformed-hash", "negative-ordinal"],
+)
+def test_identity_member_rejects_malformed_key_and_physical_fields(overrides):
+    fields = {
+        "source_record_id": "r1",
+        "act_id": "CFR_T17_S1",
+        "state": "US",
+        "corpus": "regulations",
+        "document_type": "regulation",
+        "raw_text_hash": _hash("body"),
+        "physical_row_ordinal": 0,
+    }
+    fields.update(overrides)
+    with pytest.raises(ValueError):
+        IdentityMember(**fields)

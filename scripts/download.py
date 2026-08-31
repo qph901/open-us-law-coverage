@@ -38,7 +38,7 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # (a full 40-char commit SHA or an immutable tag — never a branch). When a label is
 # not listed here, an explicit immutable ``--revision`` is required.
 #
-# **How a pin is established (NEXT.md D4).** Never transcribe a commit prefix from a
+# **How a pin is established (M1A.5 closure D4).** Never transcribe a commit prefix from a
 # report — a commit that *introduced* regulations is not proof it is the exact
 # revision every staged Parquet came from (later commits can change bytes under one
 # label). The pin is established by **checksum-matching**: resolve candidate history
@@ -47,7 +47,7 @@ _COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # matches all staged files, record that limitation explicitly rather than assert a
 # false pin, and re-download from a deliberately chosen immutable revision.
 SNAPSHOT_REVISIONS: dict[str, str] = {
-    # Established by checksum (NEXT.md D4), not transcription: this is the single HF
+    # Established by checksum (M1A.5 closure D4), not transcription: this is the single HF
     # commit for the dataset ("Open US Law v2026.08. Prior snapshots withdrawn.",
     # 2026-08-26), and its SHA256SUMS.json matches the sha256 of all 229 staged
     # Parquet files (verified via find_matching_revision).
@@ -145,7 +145,7 @@ def download(
         p = hf_hub_download(REPO, f, repo_type="dataset", revision=revision,
                             local_dir=str(out), token=token)
         paths.append(Path(p))
-    # Verify BEFORE persisting metadata (NEXT.md D4/C.1): DOWNLOAD_METADATA.json is a
+    # Verify BEFORE persisting metadata (M1A.5 closure D4/C.1): DOWNLOAD_METADATA.json is a
     # certificate that these exact bytes came from this revision, so it must not be
     # written until every requested file has passed its checksum.
     verify(snapshot, out_root, expected=parquet_files)
@@ -184,7 +184,7 @@ def verify(snapshot: str, out_root: Path, *, expected: list[str] | None = None) 
     """Check every staged Parquet against ``SHA256SUMS.json``; return the verified names.
 
     A requested/staged Parquet that is **absent from the manifest is a failure**
-    (NEXT.md D4/C.1) — the old code printed ``??`` and continued, which would let an
+    (M1A.5 closure D4/C.1) — the old code printed ``??`` and continued, which would let an
     uncovered file ride along uncertified. If ``expected`` is given, every name in it
     must also be present and verified.
     """
@@ -236,7 +236,7 @@ def find_matching_revision(
     resolver: Callable[[str], str] = _hf_ref_resolver,
     manifest_fetcher: Callable[[str], dict[str, str]],
 ) -> str | None:
-    """Establish the snapshot pin by checksum (NEXT.md D4).
+    """Establish the snapshot pin by checksum (M1A.5 closure D4).
 
     For each candidate ref: resolve it to a full commit SHA, fetch that revision's
     ``SHA256SUMS.json``, and compare it against the sha256 of every staged local file.
@@ -273,7 +273,7 @@ def main() -> None:
     if requested_ref != revision:
         print(f"resolved ref {requested_ref!r} -> commit {revision}", flush=True)
     # download() verifies every file against SHA256SUMS.json and writes
-    # DOWNLOAD_METADATA.json only if that passes (NEXT.md D4/C.1).
+    # DOWNLOAD_METADATA.json only if that passes (M1A.5 closure D4/C.1).
     download(args.names or M0_SAMPLE, args.snapshot, revision, args.out,
              requested_ref=requested_ref)
 

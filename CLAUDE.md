@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+Product decisions follow `PRIORITIES.md`: measurable law coverage first, retrieval
+time second. Engineering metrics are supporting guardrails, not product outcomes.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
@@ -14,7 +17,7 @@ design decisions.** Milestone status lives in `README.md`. As of this writing M0
 reconnaissance), M0.5A (identity-collision analysis), M0.5A.1 (collision-provenance +
 segment-order spike), and **M1A (the immutable `CanonicalSourceRecord` core)** are complete;
 the source-identity contract has frozen with the *snapshot-observed ordinal* caveat from M0.5A.1.
-**M1A.5** (the shared derived-artifact foundation) is **closed** (NEXT.md Phases A–C) — the
+**M1A.5** (the shared derived-artifact foundation) is **closed** — the
 `DerivedArtifactProvenance` multi-input DAG **+ a `payload_hash` semantic content address and the
 equal-id/unequal-payload tripwire (D2)** + identity as a **`SourceIdentityGroup`(complete member set)
 + per-member `SourceIdentityMemberAnnotation` (D1, the `DuplicateScope` analogue)** +
@@ -54,7 +57,7 @@ environment. `scripts/download.py` reads it from the env, **pins to an immutable
 (M1A.5 review P3 — a moving ref like `main` could certify newer bytes under an older snapshot label),
 and verifies every file (streamed, not `read_bytes`) against the snapshot's `SHA256SUMS.json` —
 **a staged file absent from the manifest is a failure, and `DOWNLOAD_METADATA.json` is written only after
-every checksum passes** (NEXT.md D4/C.1). The **pin is established by checksum, never by transcribing a
+every checksum passes** (M1A.5 closure D4/C.1). The **pin is established by checksum, never by transcribing a
 commit prefix** (D4): `find_matching_revision` adopts the revision whose `SHA256SUMS.json` matches the
 sha256 of every staged file. `SNAPSHOT_REVISIONS["v2026.08"]` is pinned to
 `16bc9a159faabea4af9db08f1b33832e80e85b2d` (the dataset's single commit, matched against all 229 staged
@@ -204,11 +207,11 @@ emit Markdown; neither has runtime dependencies on the other:
   `DuplicateDetectionResult` validate a **bijection** — exactly one annotation per member, each linking
   back to *this* group/scope.
   Closed vocabularies are `enum.StrEnum` (3.12).
-  **Identity is a content-addressed group + per-member annotations** (`identity.py`, NEXT.md D1): `SourceIdentityGroup`
+  **Identity is a content-addressed group + per-member annotations** (`identity.py`, M1A.5 closure D1): `SourceIdentityGroup`
   (keyed by the complete member set) + `SourceIdentityMemberAnnotation` (names `[group, this record]`; the
   scalar segment fields — fingerprint/ordinal/method/confidence — bind to the member, never the group) —
   the `DuplicateScope` analogue; it **groups/characterizes, never composes**. **Every derived artifact also
-  carries a `payload_hash`** (`provenance.py`, NEXT.md D2): the semantic content address, orthogonal to the
+  carries a `payload_hash`** (`provenance.py`, M1A.5 closure D2): the semantic content address, orthogonal to the
   derivation-address `artifact_id`, validated in `__post_init__`; `check_payload_collisions` is the
   equal-id/unequal-payload tripwire. The **concrete strategies are built** in `identity_strategies.py`:
   `usc_act_id_v1`/`state_statute_act_id_v1`/`constitution_act_id_v1` (1:1, via `resolve_single_record_identity`,

@@ -1,7 +1,7 @@
 """M1A.5 headline acceptance — the durable-foreign-key test (against real producers).
 
-From ``PROPOSAL.md`` ("Data contracts", "The durable-foreign-key rule") and
-``NEXT.md`` (D1, B.3):
+From ``PROPOSAL.md`` ("Data contracts", "The durable-foreign-key rule") and the
+M1A.5 closure decisions D1/B.3:
 
     Identity strategy v1 (key A) and v2 (key B) coexist over the same records;
     downstream provenance referencing those records stays valid; no immutable
@@ -24,6 +24,7 @@ different version + different conclusion body — coexisting without a payload c
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from open_us_law_coverage.derived import (
@@ -63,6 +64,10 @@ _CFR_ACT_ID = "CFR_T17_P240_S240.10b-5"
 _CFR_KEY = f"US|regulations|{_CFR_ACT_ID}"
 
 
+def _hash(label: str) -> str:
+    return "sha256:" + hashlib.sha256(label.encode()).hexdigest()
+
+
 def _members(n: int) -> list[IdentityMember]:
     return [
         IdentityMember(
@@ -71,7 +76,7 @@ def _members(n: int) -> list[IdentityMember]:
             state="US",
             corpus="regulations",
             document_type="regulation",
-            raw_text_hash=f"h{i}",
+            raw_text_hash=_hash(f"h{i}"),
             physical_row_ordinal=i,
         )
         for i in range(n)
@@ -128,7 +133,7 @@ def _cfr_group_at_version(
 
 
 def test_identity_v1_v2_of_one_strategy_coexist_over_same_records():
-    """A genuine version boundary (NEXT.md B.3): the real ``cfr_identity_v1`` producer
+    """A genuine M1A.5 B.3 version boundary: the real ``cfr_identity_v1`` producer
     (v1, ``provisional``) and a v2 of the *same* strategy that makes a real rule change
     (``resolved``) over one physical member set. Same producer name and same physical
     anchors; different ``producer_version`` and a different conclusion body — so two
@@ -191,8 +196,10 @@ def test_membership_change_rehashes_group_and_surviving_members():
         assert full_ids[rid] != dropped_ids[rid]
 
 
-def test_downstream_assembly_anchors_to_source_record_only(fixture_parquet: Path):
-    records = read_source_records(fixture_parquet, SNAPSHOT)
+def test_downstream_assembly_anchors_to_source_record_only(
+    statutes_fixture_parquet: Path,
+):
+    records = read_source_records(statutes_fixture_parquet, SNAPSHOT)
     rec = records[0]
     ident = resolve_single_record_identity(rec)
     assert ident is not None
@@ -220,7 +227,7 @@ def test_assembly_id_is_invariant_to_the_identity_key(fixture_parquet: Path):
 
 
 def test_assembly_v1_v2_coexist_over_same_members(fixture_parquet: Path):
-    """NEXT.md A.5: a genuine shape difference — a legacy v1-labeled fixture vs. the
+    """M1A.5 A.5: a genuine shape difference — a legacy v1-labeled fixture vs. the
     real v2 producer over one record — not two labels of one body."""
     rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     v2 = assemble_trivial_single_record(rec)

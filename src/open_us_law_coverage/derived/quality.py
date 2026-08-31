@@ -18,9 +18,9 @@ duplicate edges across unrelated law.
 
 The provenance is designed so a conclusion is fully reproducible from its declared
 inputs. A detector run over a group is a first-class **scope artifact**
-(:class:`DuplicateScope`), content-addressed by the *complete* member set. Each
-per-record :class:`QualityAnnotation` names two inputs — the scope artifact and
-its own target record — so:
+(:class:`DuplicateScope`), content-addressed by the identity-group artifact and its
+*complete* member set. Each per-record :class:`QualityAnnotation` names two inputs —
+the scope artifact and its own target record — so:
 
 * changing the sibling set changes the scope id and therefore every conclusion's
   ``artifact_id`` (the recompute frontier is complete), and
@@ -33,8 +33,9 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Iterable
+from typing import Iterable, Protocol
 
+from .identity import SourceIdentityGroup
 from .provenance import (
     ArtifactInput,
     ArtifactType,
@@ -42,15 +43,21 @@ from .provenance import (
     Evidence,
     InputType,
     assign_payload_hash,
+    require_enum_member,
     source_record_inputs,
 )
 
-if TYPE_CHECKING:
-    from open_us_law_coverage.source_record import CanonicalSourceRecord
+
+class DuplicateRecord(Protocol):
+    @property
+    def source_record_id(self) -> str: ...
+
+    @property
+    def raw_text_hash(self) -> str | None: ...
 
 
 PRODUCER_NAME = "quality_duplicate_row"
-PRODUCER_VERSION = "1"
+PRODUCER_VERSION = "2"
 
 
 class QualityStatus(StrEnum):
@@ -68,14 +75,16 @@ class QualityFlag(StrEnum):
 class DuplicateScope:
     """A duplicate-detector run over exactly one candidate identity group.
 
-    Content-addressed by the **complete member set** (its provenance edges are the
-    sorted ``source_record`` ids of every member), so the scope id is stable under
-    reordering but changes the instant a member is added or removed. Per-record
+    Content-addressed by the identity group plus the **complete member set** (its
+    provenance edges include the group artifact and sorted ``source_record`` ids),
+    so the scope id is stable under reordering but changes the instant a member is
+    added or removed. Per-record
     :class:`QualityAnnotation`\\ s name this scope as an input, which is what gives
     every conclusion a complete recompute frontier.
     """
 
     provenance: DerivedArtifactProvenance
+    identity_group_artifact_id: str
     member_source_record_ids: tuple[str, ...]
     payload_hash: str = ""
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
@@ -86,6 +95,8 @@ class DuplicateScope:
                 f"DuplicateScope provenance must be artifact_type "
                 f"{ArtifactType.DUPLICATE_SCOPE}, got {self.provenance.artifact_type}"
             )
+        if not self.identity_group_artifact_id:
+            raise ValueError("identity_group_artifact_id must be non-empty")
         members = self.member_source_record_ids
         if len(members) == 0:
             raise ValueError("a DuplicateScope must have at least one member")
@@ -101,10 +112,23 @@ class DuplicateScope:
                 f"inputs (members={sorted(members)}, "
                 f"provenance={sorted(set(self.provenance.source_record_ids()))})"
             )
+        if self.provenance.input_ids_of(InputType.ANNOTATION) != (
+            self.identity_group_artifact_id,
+        ):
+            raise ValueError(
+                "DuplicateScope provenance must name exactly its SourceIdentityGroup "
+                f"as one annotation edge (expected {self.identity_group_artifact_id!r})"
+            )
+        if len(self.provenance.inputs) != len(members) + 1:
+            raise ValueError(
+                "DuplicateScope provenance inputs must be exactly [identity group, "
+                f"all member records], got {self.provenance.inputs}"
+            )
         assign_payload_hash(
             self,
             ArtifactType.DUPLICATE_SCOPE,
             {
+                "identity_group_artifact_id": self.identity_group_artifact_id,
                 "member_source_record_ids": list(members),
                 "evidence": list(self.evidence),
             },
@@ -129,6 +153,9 @@ class QualityAnnotation:
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        require_enum_member(self.quality_status, QualityStatus, "quality_status")
+        for i, flag in enumerate(self.quality_flags):
+            require_enum_member(flag, QualityFlag, f"quality_flags[{i}]")
         if self.provenance.artifact_type != ArtifactType.QUALITY_ANNOTATION:
             raise ValueError(
                 f"QualityAnnotation provenance must be artifact_type "
@@ -143,7 +170,7 @@ class QualityAnnotation:
                 f"source_record edge (target={self.target_source_record_id!r}, "
                 f"edges={self.provenance.source_record_ids()})"
             )
-        # Exactly one scope edge (not "at least one" — NEXT.md: inputs are exactly
+        # Exactly one scope edge (not "at least one" — the contract requires exactly
         # ``[scope, target]``), and nothing beyond the [scope, target] pair.
         if len(self.provenance.input_ids_of(InputType.ANNOTATION)) != 1:
             raise ValueError(
@@ -202,12 +229,13 @@ def is_duplicate_row(annotation: QualityAnnotation) -> bool:
 
 
 def detect_duplicate_rows(
-    records: Iterable["CanonicalSourceRecord"],
+    group: SourceIdentityGroup,
+    records: Iterable[DuplicateRecord],
 ) -> DuplicateDetectionResult:
     """Flag byte-identical rows **within one candidate identity group**.
 
-    ``records`` must be exactly the members of a single resolved-or-candidate
-    identity group — there is deliberately no file/corpus scope (M1A.5 review B1),
+    ``records`` must be exactly, and without duplicates, the members of ``group``.
+    There is deliberately no file/corpus scope (M1A.5 review B1),
     because identical bytes routinely span distinct provisions and a wider scope
     would invent duplicate relationships across unrelated law.
 
@@ -218,7 +246,19 @@ def detect_duplicate_rows(
     ``unknown`` annotation. Null-text rows are never duplicates (no content to
     address), matching ``raw_text_hash is None``.
     """
+    if not isinstance(group, SourceIdentityGroup):
+        raise TypeError("group must be a SourceIdentityGroup")
     materialized = list(records)
+    record_ids = [rec.source_record_id for rec in materialized]
+    if len(set(record_ids)) != len(record_ids):
+        raise ValueError(f"duplicate input records are not allowed: {record_ids}")
+    if len(record_ids) != len(group.member_source_record_ids) or set(record_ids) != set(
+        group.member_source_record_ids
+    ):
+        raise ValueError(
+            "records must equal the identity group's complete member set "
+            f"(group={list(group.member_source_record_ids)}, records={record_ids})"
+        )
     # Canonical (sorted) member set: the scope is content-addressed by this set, so
     # its stored membership must be order-independent too — reversing the input rows
     # must yield a byte-identical DuplicateScope, not just an id-equal one (M1A.5
@@ -227,17 +267,22 @@ def detect_duplicate_rows(
 
     scope_prov = DerivedArtifactProvenance.build(
         ArtifactType.DUPLICATE_SCOPE,
-        source_record_inputs(canonical_member_ids),  # the COMPLETE member set
+        (
+            ArtifactInput(InputType.ANNOTATION, group.provenance.artifact_id),
+            *source_record_inputs(canonical_member_ids),
+        ),
         PRODUCER_NAME,
         PRODUCER_VERSION,
     )
     scope = DuplicateScope(
         provenance=scope_prov,
+        identity_group_artifact_id=group.provenance.artifact_id,
         member_source_record_ids=canonical_member_ids,
         evidence=(
             Evidence(
                 "identity_group_scope",
-                f"duplicate detection scoped to one identity group of "
+                f"duplicate detection scoped to identity group "
+                f"{group.provenance.artifact_id} with "
                 f"{len(canonical_member_ids)} member(s)",
                 confidence=1.0,
             ),

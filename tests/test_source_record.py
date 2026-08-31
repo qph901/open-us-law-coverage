@@ -41,7 +41,6 @@ from open_us_law_coverage.source_record import (
 )
 from tests.conftest import SNAPSHOT
 
-
 # ---------------------------------------------------------------------------
 # Losslessness: text and columns preserved verbatim.
 # ---------------------------------------------------------------------------

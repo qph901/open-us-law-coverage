@@ -1,2 +1,5 @@
-def main() -> None:
-    print("Hello from open-us-law-coverage!")
+"""Open US Law coverage research and reproducible audit tooling."""
+
+from .cli import main
+
+__all__ = ["main"]

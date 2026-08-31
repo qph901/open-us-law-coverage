@@ -137,7 +137,7 @@ def test_identity_association_is_a_governed_derived_artifact(fixture_parquet: Pa
 
 
 def test_corrected_producer_is_v2_and_cannot_share_v1_artifact_id(fixture_parquet: Path):
-    """Review P1 / NEXT.md A.5: the corrected producer changed the object it derives
+    """Review P1 / M1A.5 A.5: the corrected producer changed the object it derives
     from a record (no identity key, added confidence, null->noncomposable). It is
     published as v2, so it can never collide with the deprecated v1 artifact id.
 
@@ -145,11 +145,11 @@ def test_corrected_producer_is_v2_and_cannot_share_v1_artifact_id(fixture_parque
     *genuine* legacy shape difference: a hand-built v1-labeled legacy fixture vs. the
     real v2 producer output over the same record — a different artifact id, and no
     payload collision (distinct ids, so the tripwire has nothing to fire on)."""
+    from open_us_law_coverage.derived import check_payload_collisions
     from open_us_law_coverage.derived.assembly import (
         TRIVIAL_PRODUCER_NAME,
         TRIVIAL_PRODUCER_VERSION,
     )
-    from open_us_law_coverage.derived import check_payload_collisions
 
     rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
     corrected = assemble_trivial_single_record(rec)

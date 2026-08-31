@@ -179,7 +179,7 @@ def test_evidence_confidence_range_enforced():
         Evidence("k", "d", confidence=-0.1)
 
 
-# --- NEXT.md D2: payload_hash (semantic content address) + the tripwire --------
+# --- M1A.5 D2: payload_hash (semantic content address) + the tripwire ----------
 
 
 def test_payload_hash_is_order_and_type_stable():
@@ -262,7 +262,7 @@ def test_payload_hash_assigned_and_validated_on_construction():
 
 
 def test_equal_id_unequal_payload_tripwire_fires():
-    """NEXT.md D2: two artifacts with the same artifact_id but different bodies — the
+    """M1A.5 D2: two artifacts with the same artifact_id but different bodies — the
     unbumped-producer-change signature — must raise, not silently overwrite."""
     from open_us_law_coverage.derived import (
         DocumentClass,

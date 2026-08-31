@@ -13,7 +13,7 @@ M1A.5 producers:
 
 * :mod:`.provenance` — ``DerivedArtifactProvenance`` as a **multi-input DAG** plus
   the ``payload_hash`` semantic content address and the equal-id/unequal-payload
-  tripwire (NEXT.md D2). Every artifact carries both; durable references anchor to
+  tripwire (M1A.5 closure D2). Every artifact carries both; durable references anchor to
   ``source_record_id``, never to ``source_identity_key``.
 * :mod:`.identity` — ``SourceIdentityGroup`` + ``SourceIdentityMemberAnnotation``
   (the ``DuplicateScope`` analogue; groups/characterizes only, **never composes**).

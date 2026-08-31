@@ -1,4 +1,4 @@
-"""M1A.5 / NEXT.md A.1 acceptance — the identity group + per-member shape.
+"""M1A.5 A.1 acceptance — the identity group + per-member shape.
 
 Identity is the ``DuplicateScope`` analogue (D1): a :class:`SourceIdentityGroup`
 content-addressed by the complete member set, and one
@@ -16,7 +16,6 @@ from open_us_law_coverage.derived import (
     ArtifactInput,
     ArtifactType,
     DerivedArtifactProvenance,
-    Evidence,
     IdentityScope,
     IdentityStatus,
     InputType,

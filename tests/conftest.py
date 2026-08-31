@@ -200,13 +200,13 @@ _ROWS: list[dict[str, object]] = [
 _INT_COLUMNS = {"word_count", "last_amended_year", "subsection_count", "year"}
 
 
-def _fixture_table() -> pa.Table:
+def _fixture_table(rows: list[dict[str, object]] = _ROWS) -> pa.Table:
     fields = []
     for name in EXPECTED_COLUMNS:
         typ = pa.int64() if name in _INT_COLUMNS else pa.string()
         fields.append(pa.field(name, typ))
     schema = pa.schema(fields)
-    columns = {name: [row[name] for row in _ROWS] for name in EXPECTED_COLUMNS}
+    columns = {name: [row[name] for row in rows] for name in EXPECTED_COLUMNS}
     return pa.table(columns, schema=schema)
 
 
@@ -232,6 +232,19 @@ def fixture_parquet(tmp_path_factory: pytest.TempPathFactory) -> Path:
     row groups so ordinal continuity is tested at row-group boundaries."""
     path = tmp_path_factory.mktemp("m1a_fixture") / "us_synthetic_sample.parquet"
     pq.write_table(_fixture_table(), path, row_group_size=2)
+    return path
+
+
+@pytest.fixture(scope="session")
+def statutes_fixture_parquet(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The statute-only subset under a corpus-valid filename.
+
+    Identity producers recover ``corpus`` from the filename, so the mixed-corpus
+    losslessness fixture above is intentionally not a valid strategy input.
+    """
+    rows = [row for row in _ROWS if row["document_type"] == "statute"]
+    path = tmp_path_factory.mktemp("identity_fixture") / "us_synthetic_statutes.parquet"
+    pq.write_table(_fixture_table(rows), path, row_group_size=2)
     return path
 
 

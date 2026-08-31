@@ -103,6 +103,8 @@ def _summary(con: duckdb.DuckDBPyConnection, path: Path) -> tuple[int, int, int]
         """,
         [path.as_posix()],
     ).fetchone()
+    if row is None:
+        raise RuntimeError(f"summary query unexpectedly returned no row for {path}")
     return int(row[0]), int(row[1]), int(row[2])
 
 

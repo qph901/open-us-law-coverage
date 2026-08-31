@@ -8,7 +8,7 @@ Every derived artifact carries one of these. The load-bearing properties
   *derivation* address, not the semantic body: it is a pure function of the declared
   inputs + producer identity + config, so it is pre-computable before the body
   exists (that is what the recompute frontier relies on). The semantic body is
-  addressed separately by ``payload_hash`` (NEXT.md D2) — equal ``artifact_id`` means
+  addressed separately by ``payload_hash`` (M1A.5 closure D2) — equal ``artifact_id`` means
   equal derivation, **not** necessarily an equal conclusion body; the
   :func:`check_payload_collisions` tripwire is what rejects a body that drifted under
   a stale id.
@@ -32,8 +32,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Iterable, Sequence
-
+from typing import Any, Iterable, Sequence, TypeVar
 
 # ---------------------------------------------------------------------------
 # Closed vocabularies. StrEnum (3.12) values compare equal to their str, so
@@ -52,7 +51,7 @@ class InputType(StrEnum):
 class ArtifactType(StrEnum):
     """Every derived-artifact type that carries a ``DerivedArtifactProvenance``."""
 
-    # Identity is a content-addressed group + per-member annotations (NEXT.md D1,
+    # Identity is a content-addressed group + per-member annotations (M1A.5 D1,
     # the ``DuplicateScope`` analogue): the group is keyed by the COMPLETE member
     # set, each member annotation names the group and its own record. The old flat
     # ``source_identity_annotation`` — a lone scalar segment unbound on a
@@ -68,11 +67,32 @@ class ArtifactType(StrEnum):
     DUPLICATE_SCOPE = "duplicate_scope"
     SOURCE_DOCUMENT_ASSEMBLY = "source_document_assembly"
     # The versioned, mutable link from an identity strategy's key (+ ``legal_id``) to
-    # an immutable assembly artifact (NEXT.md A.2/A.3). It is a derived artifact like
+    # an immutable assembly artifact (M1A.5 A.2/A.3). It is a derived artifact like
     # any other — it carries provenance (an ``assembly`` edge to the body it links)
     # and a ``payload_hash`` — but it deliberately does NOT put the mutable key on the
     # content-addressed assembly: the key rides in this artifact's own body instead.
     ASSEMBLY_IDENTITY_ASSOCIATION = "assembly_identity_association"
+
+
+_EnumT = TypeVar("_EnumT", bound=StrEnum)
+
+
+def require_enum_member(
+    value: object, enum_type: type[_EnumT], field_name: str
+) -> _EnumT:
+    """Reject values outside a derived model's closed vocabulary.
+
+    Dataclass annotations are not runtime checks.  Requiring the actual ``StrEnum``
+    member (rather than accepting any string that happens to serialize) keeps direct
+    construction subject to the same contract as producer construction.
+    """
+    if not isinstance(value, enum_type):
+        allowed = ", ".join(repr(member.value) for member in enum_type)
+        raise ValueError(
+            f"{field_name} must be a {enum_type.__name__} member "
+            f"({allowed}), got {value!r}"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +123,7 @@ class Evidence:
 
 
 # ---------------------------------------------------------------------------
-# payload_hash — the SEMANTIC content address (NEXT.md D2).
+# payload_hash — the SEMANTIC content address (M1A.5 D2).
 #
 # ``artifact_id`` is a *derivation* address: hash(inputs, type, producer, version,
 # config), pre-computable before the body exists — that is what the recompute
@@ -196,6 +216,11 @@ class ArtifactInput:
     input_type: InputType
     input_id: str
 
+    def __post_init__(self) -> None:
+        require_enum_member(self.input_type, InputType, "ArtifactInput.input_type")
+        if not isinstance(self.input_id, str) or not self.input_id.strip():
+            raise ValueError("ArtifactInput.input_id must be a non-empty string")
+
 
 _UNIT = "\x1f"  # within one edge: separates type from id
 _RECORD = "\x1e"  # between edges
@@ -279,6 +304,11 @@ class DerivedArtifactProvenance:
         order is *not* load-bearing (``compute_artifact_id`` sorts), but duplicate
         edges are rejected: they would silently double-count a dependency.
         """
+        require_enum_member(
+            self.artifact_type,
+            ArtifactType,
+            "DerivedArtifactProvenance.artifact_type",
+        )
         if not self.producer_name or not self.producer_version:
             raise ValueError("producer_name and producer_version must be non-empty")
         for edge in self.inputs:
@@ -337,7 +367,7 @@ class DerivedArtifactProvenance:
 
 
 def check_payload_collisions(artifacts: Iterable[Any]) -> None:
-    """The equal-id / unequal-payload tripwire (NEXT.md D2).
+    """The equal-id / unequal-payload tripwire (M1A.5 D2).
 
     Any store or test that ingests derived artifacts should run them through this:
     if two artifacts present the same ``provenance.artifact_id`` but different

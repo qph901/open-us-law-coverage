@@ -41,6 +41,7 @@ from .provenance import (
     Evidence,
     InputType,
     assign_payload_hash,
+    require_enum_member,
     source_record_inputs,
 )
 
@@ -124,6 +125,14 @@ class SourceDocumentAssembly:
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        for i, role in enumerate(self.member_roles):
+            require_enum_member(role, MemberRole, f"member_roles[{i}]")
+        for i, operation in enumerate(self.operations):
+            require_enum_member(operation, Operation, f"operations[{i}]")
+        require_enum_member(
+            self.assembly_strategy, AssemblyStrategy, "assembly_strategy"
+        )
+        require_enum_member(self.assembly_status, AssemblyStatus, "assembly_status")
         n = len(self.member_source_record_ids)
         if not (len(self.member_roles) == len(self.operations) == n) or n == 0:
             raise ValueError(
@@ -140,7 +149,7 @@ class SourceDocumentAssembly:
                 f"{ArtifactType.SOURCE_DOCUMENT_ASSEMBLY}, got "
                 f"{self.provenance.artifact_type}"
             )
-        # Exact membership (NEXT.md A.4): no duplicate members, and the canonical
+        # Exact membership (M1A.5 A.4): no duplicate members, and the canonical
         # (sorted, unique) member set must exactly equal the provenance source_record
         # inputs — a set-only check would silently accept a member listed twice.
         # Member *order* is still meaningful (operations are parallel to members), so
@@ -155,6 +164,15 @@ class SourceDocumentAssembly:
                 "member_source_record_ids must exactly match the provenance "
                 f"source_record inputs (members={sorted(self.member_source_record_ids)}, "
                 f"provenance={list(self.provenance.source_record_ids())})"
+            )
+        permitted_inputs = {InputType.SOURCE_RECORD, InputType.ORACLE_EDITION}
+        invalid_inputs = [
+            edge for edge in self.provenance.inputs if edge.input_type not in permitted_inputs
+        ]
+        if invalid_inputs:
+            raise ValueError(
+                "assembly provenance accepts only source_record and oracle_edition "
+                f"inputs, got {invalid_inputs}"
             )
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be in [0, 1], got {self.confidence!r}")
@@ -201,7 +219,7 @@ class AssemblyIdentityAssociation:
     key) when an identity strategy improves, without producing two assembly bodies
     under one ``assembly_artifact_id`` (M1A.5 review B3).
 
-    It is a **first-class derived artifact** like every other (NEXT.md A.2/A.3): it
+    It is a **first-class derived artifact** like every other (M1A.5 A.2/A.3): it
     carries a :class:`DerivedArtifactProvenance` — one ``assembly`` edge to the body it
     links — and a validated ``payload_hash``, so the collision tripwire covers it too.
     The distinction from the assembly it points at is *where the key lives*: the key
@@ -226,7 +244,7 @@ class AssemblyIdentityAssociation:
                 f"{self.provenance.artifact_type}"
             )
         # An association with an empty key or dangling assembly id is a bug — it would
-        # anchor ``legal_id`` to nothing (NEXT.md A.3).
+        # anchor ``legal_id`` to nothing (M1A.5 A.3).
         if not self.source_identity_key:
             raise ValueError("source_identity_key must be non-empty")
         if not self.assembly_artifact_id:
@@ -277,7 +295,7 @@ def assemble_trivial_single_record(
     with one via :func:`associate_assembly_with_identity`.
 
     The producer version is the module constant ``TRIVIAL_PRODUCER_VERSION`` and is
-    **not** caller-overridable (NEXT.md A.5): the version is a property of the code,
+    **not** caller-overridable (M1A.5 A.5): the version is a property of the code,
     not the call site — a caller that could relabel it could forge a v1 id from v2
     output, or hide a real shape change behind an old version.
     """

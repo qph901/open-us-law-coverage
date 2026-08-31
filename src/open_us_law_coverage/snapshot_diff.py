@@ -140,9 +140,9 @@ def diff(old: pl.DataFrame, new: pl.DataFrame) -> dict:
 
 
 def render(d: dict, old_label: str, new_label: str, name: str) -> str:
-    L = []
+    L: list[str] = []
     w = L.append
-    w(f"# M0 — `act_id` stability across snapshots\n")
+    w("# M0 — `act_id` stability across snapshots\n")
     w(f"**File:** `{name}`  ")
     w(f"**Old:** `{old_label}` ({d['old_n']:,} rows)  ")
     w(f"**New:** `{new_label}` ({d['new_n']:,} rows)\n")

@@ -1,4 +1,4 @@
-"""Concrete ``SourceIdentityStrategy`` producers (M1A.5 closure, NEXT.md Phase B).
+"""Concrete ``SourceIdentityStrategy`` producers (M1A.5 closure Phase B).
 
 A strategy *implementation* is corpus-specific; the artifact *interfaces*
 (:mod:`.identity`) are universal (the M0.5B3 rule). These producers emit the D1
@@ -35,6 +35,7 @@ the 11 GB ``text`` column. Build one from a streamed record with
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
@@ -70,6 +71,8 @@ STATE_REGULATION_V1 = "state_regulation_v1"
 
 STRATEGY_VERSION = "1"
 
+_RAW_TEXT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 def act_id_prefix(act_id: str | None) -> str:
     """The namespace prefix of an ``act_id`` (``CFR_T17_..`` -> ``CFR``)."""
@@ -92,6 +95,34 @@ class IdentityMember:
     document_type: str | None
     raw_text_hash: str | None
     physical_row_ordinal: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "source_record_id",
+            "act_id",
+            "state",
+            "corpus",
+            "document_type",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"IdentityMember.{field_name} must be non-empty")
+        if self.raw_text_hash is not None and not _RAW_TEXT_HASH_RE.fullmatch(
+            self.raw_text_hash
+        ):
+            raise ValueError(
+                "IdentityMember.raw_text_hash must be None or canonical "
+                f"'sha256:' plus 64 lowercase hex characters, got {self.raw_text_hash!r}"
+            )
+        if (
+            isinstance(self.physical_row_ordinal, bool)
+            or not isinstance(self.physical_row_ordinal, int)
+            or self.physical_row_ordinal < 0
+        ):
+            raise ValueError(
+                "IdentityMember.physical_row_ordinal must be a non-negative integer, "
+                f"got {self.physical_row_ordinal!r}"
+            )
 
 
 def corpus_of_source_file(source_file: str) -> str:
@@ -215,10 +246,45 @@ def _single_member_identity(
     return SourceIdentityResult(group=group, members=(annotation,))
 
 
+def _validate_single_record_strategy(
+    member: IdentityMember,
+    *,
+    expected_corpus: str,
+    expected_document_type: str,
+    expected_prefixes: frozenset[str],
+    strategy_name: str,
+) -> None:
+    """Enforce a public 1:1 producer's corpus/type/namespace boundary."""
+    if member.corpus != expected_corpus:
+        raise ValueError(
+            f"{strategy_name} requires corpus {expected_corpus!r}, got "
+            f"{member.corpus!r}"
+        )
+    if member.document_type != expected_document_type:
+        raise ValueError(
+            f"{strategy_name} requires document_type {expected_document_type!r}, got "
+            f"{member.document_type!r}"
+        )
+    prefix = act_id_prefix(member.act_id)
+    if prefix not in expected_prefixes:
+        raise ValueError(
+            f"{strategy_name} requires act_id namespace in "
+            f"{sorted(expected_prefixes)!r}, got {prefix!r}"
+        )
+
+
 def usc_act_id_identity(record: "CanonicalSourceRecord") -> SourceIdentityResult:
     """``usc_act_id_v1`` — one USC section row is one document (``act_id`` unique)."""
+    member = identity_member(record)
+    _validate_single_record_strategy(
+        member,
+        expected_corpus="statutes",
+        expected_document_type="statute",
+        expected_prefixes=frozenset({"USC"}),
+        strategy_name=USC_ACT_ID_V1,
+    )
     return _single_member_identity(
-        identity_member(record),
+        member,
         strategy_name=USC_ACT_ID_V1,
         evidence_detail="USC act_id is unique per section; 1:1 source->document",
     )
@@ -228,8 +294,16 @@ def state_statute_act_id_identity(
     record: "CanonicalSourceRecord",
 ) -> SourceIdentityResult:
     """``state_statute_act_id_v1`` — one state statute row is one document."""
+    member = identity_member(record)
+    _validate_single_record_strategy(
+        member,
+        expected_corpus="statutes",
+        expected_document_type="statute",
+        expected_prefixes=frozenset({"STATE"}),
+        strategy_name=STATE_STATUTE_ACT_ID_V1,
+    )
     return _single_member_identity(
-        identity_member(record),
+        member,
         strategy_name=STATE_STATUTE_ACT_ID_V1,
         evidence_detail="state statute act_id is unique per provision; 1:1",
     )
@@ -237,8 +311,16 @@ def state_statute_act_id_identity(
 
 def constitution_identity(record: "CanonicalSourceRecord") -> SourceIdentityResult:
     """``constitution_act_id_v1`` — one constitution provision row is one document."""
+    member = identity_member(record)
+    _validate_single_record_strategy(
+        member,
+        expected_corpus="constitutions",
+        expected_document_type="constitution",
+        expected_prefixes=frozenset({"CONST", "SCONST"}),
+        strategy_name=CONSTITUTION_ACT_ID_V1,
+    )
     return _single_member_identity(
-        identity_member(record),
+        member,
         strategy_name=CONSTITUTION_ACT_ID_V1,
         evidence_detail="constitution act_id is unique per provision; 1:1",
     )
@@ -300,10 +382,8 @@ def _validate_regulation_group(
     * that shared ``act_id`` is in this producer's namespace (``expected_prefix``).
     """
     for m in members:
-        if not m.source_record_id:
-            raise ValueError("every regulation member needs a source_record_id")
-        if not m.act_id:
-            raise ValueError("every regulation member needs a non-empty act_id")
+        if not m.state or not m.state.strip():
+            raise ValueError("every regulation member needs a non-empty state")
         if m.corpus != "regulations":
             raise ValueError(
                 f"regulation group member is not in the regulations corpus: "

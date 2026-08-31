@@ -1,4 +1,4 @@
-"""Identity as a content-addressed group + per-member annotations (M1A.5, NEXT.md D1).
+"""Identity as a content-addressed group + per-member annotations (M1A.5 D1).
 
 Identity **groups and characterizes; it never composes.** It may conclude
 "R1/R2/R3 appear related, candidate = CFR §X" but must **not** decide "append R2
@@ -6,7 +6,7 @@ after R1" — that composition decision belongs to :mod:`.assembly`. Correct
 abstention is success; **100% identity coverage is not a metric** (``PROPOSAL.md``
 M0.5A / M0.5A.1).
 
-The shape is the ``DuplicateScope`` analogue (NEXT.md D1). An earlier design put a
+The shape is the ``DuplicateScope`` analogue (M1A.5 D1). An earlier design put a
 single ``SourceIdentityAnnotation`` on a multi-member group with **scalar** segment
 fields (``segment_fingerprint``, ``segment_ordinal``) — which are unbound on a
 multi-member object (*which* member is the fingerprint about?) — and grouped members
@@ -38,6 +38,7 @@ from .provenance import (
     Evidence,
     InputType,
     assign_payload_hash,
+    require_enum_member,
 )
 
 
@@ -99,6 +100,8 @@ class SourceIdentityGroup:
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        require_enum_member(self.identity_scope, IdentityScope, "identity_scope")
+        require_enum_member(self.identity_status, IdentityStatus, "identity_status")
         if self.provenance.artifact_type != ArtifactType.SOURCE_IDENTITY_GROUP:
             raise ValueError(
                 f"identity group provenance must be artifact_type "
@@ -116,7 +119,7 @@ class SourceIdentityGroup:
             raise ValueError(f"duplicate group members are not allowed: {members}")
         # The stored member set must be canonical (sorted) and exactly equal to the
         # provenance source_record edges — otherwise the content address names a
-        # different set than the object claims (NEXT.md A.3/A.4).
+        # different set than the object claims (M1A.5 A.3/A.4).
         if tuple(sorted(members)) != members:
             raise ValueError(
                 f"member_source_record_ids must be sorted (canonical), got {members}"
@@ -126,6 +129,11 @@ class SourceIdentityGroup:
                 "member_source_record_ids must equal the provenance source_record "
                 f"inputs (members={sorted(members)}, "
                 f"provenance={sorted(set(self.provenance.source_record_ids()))})"
+            )
+        if len(self.provenance.inputs) != len(members):
+            raise ValueError(
+                "SourceIdentityGroup provenance inputs must be exactly its "
+                f"source_record members, got {self.provenance.inputs}"
             )
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be in [0, 1], got {self.confidence!r}")
@@ -166,6 +174,16 @@ class SourceIdentityMemberAnnotation:
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        require_enum_member(
+            self.segment_order_method,
+            SegmentOrderMethod,
+            "segment_order_method",
+        )
+        require_enum_member(
+            self.segment_order_confidence,
+            SegmentOrderConfidence,
+            "segment_order_confidence",
+        )
         if (
             self.provenance.artifact_type
             != ArtifactType.SOURCE_IDENTITY_MEMBER_ANNOTATION
@@ -185,7 +203,7 @@ class SourceIdentityMemberAnnotation:
                 f"edges={self.provenance.source_record_ids()})"
             )
         # It must anchor to exactly one group — a single ANNOTATION edge (the group
-        # artifact_id). "Exactly one", not "at least one" (NEXT.md: inputs are exactly
+        # artifact_id). "Exactly one", not "at least one" (inputs are exactly
         # ``[group, target]``): a second annotation edge would let one member claim
         # membership in two groups under one conclusion id.
         if len(self.provenance.input_ids_of(InputType.ANNOTATION)) != 1:
@@ -199,6 +217,15 @@ class SourceIdentityMemberAnnotation:
             raise ValueError(
                 "member annotation provenance inputs must be exactly [group, target], "
                 f"got {self.provenance.inputs}"
+            )
+        if self.segment_ordinal is not None and (
+            isinstance(self.segment_ordinal, bool)
+            or not isinstance(self.segment_ordinal, int)
+            or self.segment_ordinal < 0
+        ):
+            raise ValueError(
+                "segment_ordinal must be a non-negative integer or None, got "
+                f"{self.segment_ordinal!r}"
             )
         assign_payload_hash(
             self,
