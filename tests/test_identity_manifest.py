@@ -77,6 +77,60 @@ def regs_parquet(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
+def test_manifest_hash_matches_canonical_pipeline_and_no_tripwire(
+    con, regs_parquet: Path
+):
+    """Finding P1-1: the manifest's ``raw_text_hash`` must be the exact canonical
+    format (``"sha256:" + sha256(raw UTF-8 text)``), not a bare ``md5``. Proven by
+    building identity members for the same physical rows two ways — the DuckDB manifest
+    path and the canonical ``CanonicalSourceRecord`` path — and showing they produce
+    identical member-annotation ``artifact_id`` **and** ``payload_hash``, so the D2
+    collision tripwire stays silent across the two paths (a bare md5 made it fire)."""
+    from collections import defaultdict
+
+    from open_us_law_coverage.derived import (
+        check_payload_collisions,
+        identity_member,
+        regulations_identity_group,
+    )
+    from open_us_law_coverage.identity_manifest import _colliding_members
+    from open_us_law_coverage.source_record import read_source_records
+
+    manifest_buckets = _colliding_members(con, regs_parquet, "v2026.08")
+    assert manifest_buckets  # the fixture has colliding groups
+
+    canon_by_act: dict[str, list] = defaultdict(list)
+    for rec in read_source_records(regs_parquet, "v2026.08"):
+        canon_by_act[rec.column("act_id")].append(identity_member(rec))
+
+    all_artifacts = []
+    for act_id, m_members in manifest_buckets.items():
+        c_members = canon_by_act[act_id]
+        # same physical rows recovered by both paths
+        assert {m.source_record_id for m in m_members} == {
+            c.source_record_id for c in c_members
+        }
+        # identical canonical raw_text_hash per physical row
+        m_hash = {m.source_record_id: m.raw_text_hash for m in m_members}
+        c_hash = {c.source_record_id: c.raw_text_hash for c in c_members}
+        assert m_hash == c_hash
+        for h in c_hash.values():
+            assert h is None or h.startswith("sha256:")
+
+        m_res = regulations_identity_group(m_members)
+        c_res = regulations_identity_group(c_members)
+        assert m_res.group.provenance.artifact_id == c_res.group.provenance.artifact_id
+        assert m_res.group.payload_hash == c_res.group.payload_hash
+        # members are ordered by physical row, so the two paths align member-for-member
+        for ma, ca in zip(m_res.members, c_res.members, strict=True):
+            assert ma.provenance.artifact_id == ca.provenance.artifact_id
+            assert ma.payload_hash == ca.payload_hash
+        all_artifacts += [m_res.group, c_res.group, *m_res.members, *c_res.members]
+
+    # equal ids across both paths -> equal payloads: the tripwire has nothing to fire.
+    check_payload_collisions(all_artifacts)
+
+
 def test_scan_group_sizes_is_text_free_and_correct(con, regs_parquet: Path):
     rows, counts = scan_group_sizes(con, regs_parquet)
     assert rows == 6

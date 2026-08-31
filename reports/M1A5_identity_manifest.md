@@ -1,6 +1,6 @@
 # M1A.5 — full-snapshot identity manifest
 
-Snapshot: **v2026.08**. Files: **229**. Rows: **2,978,617**. Identity groups (distinct `act_id` per file): **2,809,875**. Produced by the concrete Phase-B strategies run over every file (`act_id`-only sizing for all; the real collision producers + within-group `detect_duplicate_rows` where `act_id` repeats).
+Snapshot: **v2026.08**. Files: **229**. Rows: **2,978,617**. Identity groups (distinct `act_id` per file): **2,809,875**. Two passes, kept distinct: **structural `act_id` sizing** over *every* file (a count of dataset structure, not a producer run — no artifact is constructed), and the **concrete Phase-B producers** (`cfr_identity_v1` / `federal_register_document_v1` / `state_regulation_v1` + within-group `detect_duplicate_rows`) run **only over the colliding groups**. A single-member count below is structure, not evidence a 1:1 producer accepted the row.
 
 ## Per-corpus group structure
 
@@ -43,7 +43,7 @@ Aggregated across every collision file: `us_federal_regulations.parquet`, `us_il
 - single-member (1:1) groups within the collision files: **354,354**.
 - **max group size**: 14.
 - group `identity_status`: `ambiguous`:165,067, `provisional`:2,277, `resolved`:354,354
-- **abstention/ambiguity rate** (ambiguous groups / groups in collision files): 31.64%.
+- outcome split (of groups in collision files): **resolved** (1:1) 67.92%, **provisional** (multi-segment candidate, assembly to confirm) 0.44%, **ambiguous** (FR numbering bucket, never composed) 31.64%. All three are safe non-fabrication outcomes; only `resolved` is a committed 1:1 identity.
 
 ### Group-size distribution (collision files)
 
@@ -66,9 +66,13 @@ Aggregated across every collision file: `us_federal_regulations.parquet`, `us_il
 
 ## What this establishes
 
-- **Identity is 1:1 outside the regulations corpora** — every statute,
-  constitution, court-rule, and guidance file is entirely single-member groups, so
-  the 1:1 strategies cover the overwhelming majority of the snapshot.
+- **Identity is structurally 1:1 outside the regulations corpora** — every statute,
+  constitution, court-rule, and guidance file is entirely single-member `act_id`
+  groups. This is a *structural* measurement (the sizing pass), **not** a claim that a
+  concrete producer ran: the built 1:1 producers cover statutes and constitutions
+  (`usc_act_id_v1` / `state_statute_act_id_v1` / `constitution_act_id_v1`), while
+  court-rules and guidance have **no** concrete strategy yet — their single-member
+  counts here are structure awaiting a producer, not producer output.
 - **`act_id` collisions are a *regulations* phenomenon, and not federal-only** — a
   finding this manifest surfaced: alongside `us_federal_regulations` (CFR + FR),
   several **state administrative-code** corpora repeat an `act_id` across rows. The
@@ -79,10 +83,11 @@ Aggregated across every collision file: `us_federal_regulations.parquet`, `us_il
   counted by the real `detect_duplicate_rows` run inside each group — never across
   groups, so byte-identical text under *different* `act_id`s is not conflated (the
   M0.5B3 content-vs-identity finding, confirmed at snapshot scale).
-- **Abstention is a first-class, measured outcome**, not an error: the FR
-  `ambiguous` rate is reported, and a `provisional`/`ambiguous` group is a safe
-  non-composition, not a failure.
+- **Abstention is a first-class, measured outcome**, not an error, and its kinds are
+  reported **separately**: `resolved` (a committed 1:1 identity), `provisional` (a
+  multi-segment candidate assembly must confirm), and `ambiguous` (an FR numbering
+  bucket, never composed) are three distinct safe outcomes — none collapsed into a
+  single "ambiguity rate".
 
 This report is byte-stable and is the regression fixture for the next
 regulations-bearing snapshot.
-

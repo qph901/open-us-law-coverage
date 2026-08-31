@@ -105,6 +105,37 @@ def test_identity_association_is_separate_and_does_not_change_the_assembly(fixtu
     assert assoc_a.legal_id == "LEGAL_1"
 
 
+def test_identity_association_is_a_governed_derived_artifact(fixture_parquet: Path):
+    """Finding P1-4: the association is a first-class derived artifact — it carries
+    provenance (one ``assembly`` edge) and a validated ``payload_hash``, so the
+    collision tripwire covers it. Two keys over one assembly get distinct
+    ``artifact_id``s (the key is folded into ``config_hash``, never a provenance edge),
+    so they coexist without a payload collision."""
+    from open_us_law_coverage.derived import (
+        ArtifactType,
+        InputType,
+        check_payload_collisions,
+    )
+
+    rec = read_source_records(fixture_parquet, SNAPSHOT)[0]
+    asm = assemble_trivial_single_record(rec)
+    a = associate_assembly_with_identity(
+        "KEY_A", asm, strategy_name="cfr_identity_v1", strategy_version="1"
+    )
+    b = associate_assembly_with_identity(
+        "KEY_B", asm, strategy_name="cfr_identity_v1", strategy_version="1"
+    )
+    # a governed artifact: right type, a validated payload hash, one assembly edge.
+    assert a.provenance.artifact_type == ArtifactType.ASSEMBLY_IDENTITY_ASSOCIATION
+    assert a.payload_hash and b.payload_hash
+    assert a.provenance.input_ids_of(InputType.ASSEMBLY) == (asm.provenance.artifact_id,)
+    # the mutable key is never a provenance edge (durable-FK rule)…
+    assert "KEY_A" not in {e.input_id for e in a.provenance.inputs}
+    # …but it distinguishes the two associations, so no id collision over one assembly.
+    assert a.provenance.artifact_id != b.provenance.artifact_id
+    check_payload_collisions([a, b])
+
+
 def test_corrected_producer_is_v2_and_cannot_share_v1_artifact_id(fixture_parquet: Path):
     """Review P1 / NEXT.md A.5: the corrected producer changed the object it derives
     from a record (no identity key, added confidence, null->noncomposable). It is

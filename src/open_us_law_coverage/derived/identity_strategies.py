@@ -249,18 +249,33 @@ def resolve_single_record_identity(
 ) -> SourceIdentityResult | None:
     """Dispatch a record to its 1:1 strategy, or ``None`` if it is not a 1:1 case.
 
-    Regulations (``CFR_*`` / ``FR_*``) return ``None`` here — they are grouped by the
-    collision strategies (B.2), which need the sibling set, not a per-record call.
+    **Dispatch is by the authoritative ``document_type`` column first** (100%
+    populated, M0) — the ``act_id`` *prefix* only refines *within* a document type and
+    is never treated as proof of type on its own (M1A.5 review P2). In particular a
+    ``STATE_*`` prefix is **ambiguous** — it prefixes both state statutes and state
+    administrative regulations — so it must not be read as "statute".
+
+    Regulations (``document_type == 'regulation'``, whatever the prefix — ``CFR_*`` /
+    ``FR_*`` / ``STATE_*`` administrative codes) return ``None`` here: they are grouped
+    by the collision strategies (B.2), which need the sibling set, not a per-record
+    call. A state *regulation* routed through here as a "statute" would be a false
+    ``resolved`` 1:1 identity — the exact bug this dispatch order prevents.
     """
     member = identity_member(record)
-    prefix = (member.act_id or "").split("_", 1)[0]
+    prefix = act_id_prefix(member.act_id)
     document_type = member.document_type
-    if prefix == "USC":
-        return usc_act_id_identity(record)
-    if document_type == "constitution" or prefix in {"SCONST", "CONST"}:
+    if document_type == "regulation":
+        return None  # grouped by the collision strategies, never a 1:1 here
+    if document_type == "constitution":
         return constitution_identity(record)
-    if document_type == "statute" or prefix == "STATE":
+    if document_type == "statute":
+        # The prefix refines statute -> federal (USC) vs state, but only within the
+        # already-authoritative statute type.
+        if prefix == "USC":
+            return usc_act_id_identity(record)
         return state_statute_act_id_identity(record)
+    # No authoritative 1:1 type — abstain (court rules / guidance have no concrete
+    # strategy yet; a bare prefix is not enough to claim identity).
     return None
 
 
@@ -268,10 +283,56 @@ def resolve_single_record_identity(
 # B.2 — the regulations collision strategies (multi-member groups).
 # ---------------------------------------------------------------------------
 
+def _validate_regulation_group(
+    members: Sequence[IdentityMember], *, expected_prefix: str
+) -> None:
+    """Reject a malformed or heterogeneous regulations group (M1A.5 review P2/P5).
+
+    A collision producer keys and characterizes the whole group from a shared
+    ``(state, corpus, act_id)``; that is only sound if every member actually shares it
+    and is actually a regulation in the producer's namespace. Without this, an
+    adversarial mixed group (e.g. a CFR row, an FR row, and a state statute) would be
+    labeled with the first member's key. Enforced invariants:
+
+    * every member field the key/namespace depends on is populated;
+    * every member is a ``regulation`` in the ``regulations`` corpus;
+    * all members share one ``(state, corpus, act_id)`` grouping key;
+    * that shared ``act_id`` is in this producer's namespace (``expected_prefix``).
+    """
+    for m in members:
+        if not m.source_record_id:
+            raise ValueError("every regulation member needs a source_record_id")
+        if not m.act_id:
+            raise ValueError("every regulation member needs a non-empty act_id")
+        if m.corpus != "regulations":
+            raise ValueError(
+                f"regulation group member is not in the regulations corpus: "
+                f"{m.source_record_id!r} corpus={m.corpus!r}"
+            )
+        if m.document_type != "regulation":
+            raise ValueError(
+                f"regulation group member is not a regulation: {m.source_record_id!r} "
+                f"document_type={m.document_type!r}"
+            )
+    keys = {_identity_key(m) for m in members}
+    if len(keys) != 1:
+        raise ValueError(
+            f"a regulations identity group must share one (state, corpus, act_id) key, "
+            f"got {sorted(keys)}"
+        )
+    prefix = act_id_prefix(members[0].act_id)
+    if prefix != expected_prefix:
+        raise ValueError(
+            f"act_id namespace {prefix!r} is not this strategy's namespace "
+            f"{expected_prefix!r} (act_id={members[0].act_id!r})"
+        )
+
+
 def _regulations_identity_group(
     members: Sequence[IdentityMember],
     *,
     strategy_name: str,
+    expected_prefix: str,
     multi_scope: IdentityScope,
     multi_status: IdentityStatus,
     multi_evidence_detail: str,
@@ -284,9 +345,12 @@ def _regulations_identity_group(
     snapshot-observed, never a reading order. Identity groups and characterizes; it
     does **not** compose (FR is never concatenated — that abstention lives in
     assembly, gated by this group's ``ambiguous`` status).
+
+    The group is validated for homogeneity + namespace first (:func:`_validate_regulation_group`).
     """
     if not members:
         raise ValueError("a regulations identity group needs at least one member")
+    _validate_regulation_group(members, expected_prefix=expected_prefix)
     key = _identity_key(members[0])
 
     if len(members) == 1:
@@ -353,6 +417,7 @@ def cfr_identity_group(members: Sequence[IdentityMember]) -> SourceIdentityResul
     return _regulations_identity_group(
         members,
         strategy_name=CFR_IDENTITY_V1,
+        expected_prefix="CFR",
         multi_scope=IdentityScope.SEGMENT,
         multi_status=IdentityStatus.PROVISIONAL,
         multi_evidence_detail="provisional multi-segment CFR candidate; assembly to confirm",
@@ -374,6 +439,7 @@ def federal_register_document_group(
     return _regulations_identity_group(
         members,
         strategy_name=FEDERAL_REGISTER_DOCUMENT_V1,
+        expected_prefix="FR",
         multi_scope=IdentityScope.NUMBERING_BUCKET,
         multi_status=IdentityStatus.AMBIGUOUS,
         multi_evidence_detail=(
@@ -398,6 +464,7 @@ def state_regulation_identity_group(
     return _regulations_identity_group(
         members,
         strategy_name=STATE_REGULATION_V1,
+        expected_prefix="STATE",
         multi_scope=IdentityScope.SEGMENT,
         multi_status=IdentityStatus.PROVISIONAL,
         multi_evidence_detail=(

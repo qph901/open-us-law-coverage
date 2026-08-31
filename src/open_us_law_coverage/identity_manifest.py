@@ -3,8 +3,18 @@
 The first end-to-end evidence that the identity layer behaves **at scale**, and the
 natural regression fixture for the next snapshot. Over the full v2026.08 snapshot it
 reports, per corpus: rows, groups (distinct ``act_id``), the group-size distribution,
-collision counts, within-group duplicate rows, and the ambiguity / abstention rate —
-the outputs of the concrete strategies (Phase B) run across every file.
+collision counts, within-group duplicate rows, and the outcome breakdown.
+
+**Two distinct passes — do not conflate them** (M1A.5 review P7). (1) *Structural
+``act_id`` sizing* runs over **every** file (``COUNT(*) GROUP BY act_id``): it is a
+count of the dataset's structure, **not** a producer run — no artifact is
+constructed, so a single-member group here is not evidence that a concrete 1:1
+producer accepted it (and corpora like court-rules / guidance have **no** concrete
+strategy yet). (2) *Concrete producers* — ``cfr_identity_v1`` /
+``federal_register_document_v1`` / ``state_regulation_v1`` plus within-group
+``detect_duplicate_rows`` — run **only over the colliding groups** (the files where
+``act_id`` repeats). The report keeps the two clearly separate and never labels a
+structural count a "producer output".
 
 **OOM invariant (CLAUDE.md).** The federal regulations file has an ~11 GB ``text``
 column in a single ~3.3 GB row-group; materializing a row-group OOM-kills the box.
@@ -14,10 +24,14 @@ never pyarrow ``read_row_group``:
 
 * group sizing is ``COUNT(*) GROUP BY act_id`` (reads only the small ``act_id``
   column) for every file;
-* for files where ``act_id`` repeats — M0 established that is **only**
-  ``us_federal_regulations`` — the colliding rows' ``(file_row_number, act_id,
-  md5(text))`` are streamed out (``md5(text)`` streams over the whole column and
-  spills; a ``SEMI JOIN`` returns only the colliding rows, a small set), lifted into
+* for files where ``act_id`` repeats — M0 saw this only in ``us_federal_regulations``,
+  but **this manifest disproved "federal-only"**: several *state* administrative-code
+  corpora repeat an ``act_id`` too (the reason ``state_regulation_v1`` exists) — the
+  colliding rows' ``(file_row_number, act_id, raw_text_hash)`` are streamed out, where
+  the hash is the **exact canonical ``compute_raw_text_hash`` form**
+  ``'sha256:' || sha256(text)`` (M1A.5 review P1 — a bare ``md5`` here made the D2
+  tripwire fire against the canonical pipeline). It streams over the whole column and
+  spills; a ``SEMI JOIN`` returns only the colliding rows, a small set, lifted into
   lightweight :class:`~.derived.identity_strategies.IdentityMember`\\ s, and fed to
   the real ``cfr_identity_v1`` / ``federal_register_document_v1`` producers plus
   ``detect_duplicate_rows`` *within each group*. Peak memory stays at
@@ -121,15 +135,25 @@ def _colliding_members(
 ) -> dict[str, list[IdentityMember]]:
     """The members of every colliding ``act_id`` group, as lightweight views.
 
-    ``md5(text)`` streams over the whole ``text`` column (spilling under the memory
-    limit); the ``SEMI JOIN`` returns only rows whose ``act_id`` repeats, so no
-    ``text`` bytes and only a small result reach Python. ``source_record_id`` is the
-    real M1A id (``file_row_number`` is the physical row ordinal)."""
+    The text hash is computed **in the exact canonical form** the M1A pipeline uses —
+    ``compute_raw_text_hash`` = ``"sha256:" + sha256(raw UTF-8 text)``, null on null
+    text (M1A.5 review P1). DuckDB's ``sha256(VARCHAR)`` hashes the string's UTF-8
+    bytes and returns lowercase hex — byte-for-byte identical to Python's
+    ``hashlib.sha256(text.encode()).hexdigest()``, and ``'sha256:' || sha256(NULL)``
+    is ``NULL`` — so a manifest ``IdentityMember`` and a canonical record for the same
+    physical row carry the **same** ``raw_text_hash``, and thus the same
+    ``segment_fingerprint`` and member-annotation ``payload_hash`` (without this the
+    D2 tripwire would fire across the two paths). ``sha256(text)`` streams over the
+    whole ``text`` column (spilling under the memory limit); the ``SEMI JOIN`` returns
+    only rows whose ``act_id`` repeats, so no ``text`` bytes and only a small result
+    reach Python. ``source_record_id`` is the real M1A id (``file_row_number`` is the
+    physical row ordinal)."""
     checksum = file_sha256(path)
     corpus = corpus_of_source_file(path.name)
     q = """
     WITH b AS (
-        SELECT file_row_number AS frn, act_id, state, document_type, md5(text) AS h
+        SELECT file_row_number AS frn, act_id, state, document_type,
+               CASE WHEN text IS NULL THEN NULL ELSE 'sha256:' || sha256(text) END AS h
         FROM read_parquet(?, file_row_number=true)
     ),
     dup AS (SELECT act_id FROM b GROUP BY act_id HAVING COUNT(*) > 1)
@@ -238,9 +262,13 @@ def build_manifest(
 EXIT_SECTION = """\
 ## What this establishes
 
-- **Identity is 1:1 outside the regulations corpora** — every statute,
-  constitution, court-rule, and guidance file is entirely single-member groups, so
-  the 1:1 strategies cover the overwhelming majority of the snapshot.
+- **Identity is structurally 1:1 outside the regulations corpora** — every statute,
+  constitution, court-rule, and guidance file is entirely single-member `act_id`
+  groups. This is a *structural* measurement (the sizing pass), **not** a claim that a
+  concrete producer ran: the built 1:1 producers cover statutes and constitutions
+  (`usc_act_id_v1` / `state_statute_act_id_v1` / `constitution_act_id_v1`), while
+  court-rules and guidance have **no** concrete strategy yet — their single-member
+  counts here are structure awaiting a producer, not producer output.
 - **`act_id` collisions are a *regulations* phenomenon, and not federal-only** — a
   finding this manifest surfaced: alongside `us_federal_regulations` (CFR + FR),
   several **state administrative-code** corpora repeat an `act_id` across rows. The
@@ -251,9 +279,11 @@ EXIT_SECTION = """\
   counted by the real `detect_duplicate_rows` run inside each group — never across
   groups, so byte-identical text under *different* `act_id`s is not conflated (the
   M0.5B3 content-vs-identity finding, confirmed at snapshot scale).
-- **Abstention is a first-class, measured outcome**, not an error: the FR
-  `ambiguous` rate is reported, and a `provisional`/`ambiguous` group is a safe
-  non-composition, not a failure.
+- **Abstention is a first-class, measured outcome**, not an error, and its kinds are
+  reported **separately**: `resolved` (a committed 1:1 identity), `provisional` (a
+  multi-segment candidate assembly must confirm), and `ambiguous` (an FR numbering
+  bucket, never composed) are three distinct safe outcomes — none collapsed into a
+  single "ambiguity rate".
 
 This report is byte-stable and is the regression fixture for the next
 regulations-bearing snapshot.
@@ -270,9 +300,13 @@ def render_report(res: ManifestResult) -> str:
     L.append("")
     L.append(f"Snapshot: **{res.snapshot}**. Files: **{res.total_files}**. Rows: "
              f"**{res.total_rows:,}**. Identity groups (distinct `act_id` per file): "
-             f"**{res.total_groups:,}**. Produced by the concrete Phase-B strategies "
-             "run over every file (`act_id`-only sizing for all; the real collision "
-             "producers + within-group `detect_duplicate_rows` where `act_id` repeats).")
+             f"**{res.total_groups:,}**. Two passes, kept distinct: **structural "
+             "`act_id` sizing** over *every* file (a count of dataset structure, not a "
+             "producer run — no artifact is constructed), and the **concrete Phase-B "
+             "producers** (`cfr_identity_v1` / `federal_register_document_v1` / "
+             "`state_regulation_v1` + within-group `detect_duplicate_rows`) run **only "
+             "over the colliding groups**. A single-member count below is structure, "
+             "not evidence a 1:1 producer accepted the row.")
     L.append("")
     L.append("## Per-corpus group structure")
     L.append("")
@@ -318,8 +352,17 @@ def render_report(res: ManifestResult) -> str:
                  + ", ".join(f"`{k}`:{v:,}" for k, v in sorted(d.status_groups.items())))
         total_reg_groups = sum(d.status_groups.values())
         ambiguous = d.status_groups.get(str(IdentityStatus.AMBIGUOUS), 0)
-        L.append(f"- **abstention/ambiguity rate** (ambiguous groups / groups in "
-                 f"collision files): {_pct(ambiguous, total_reg_groups)}.")
+        provisional = d.status_groups.get(str(IdentityStatus.PROVISIONAL), 0)
+        resolved = d.status_groups.get(str(IdentityStatus.RESOLVED), 0)
+        # Reported separately — provisional and ambiguous are *different* safe
+        # non-composition outcomes, not one merged "ambiguity rate" (M1A.5 review P7).
+        L.append(f"- outcome split (of groups in collision files): "
+                 f"**resolved** (1:1) {_pct(resolved, total_reg_groups)}, "
+                 f"**provisional** (multi-segment candidate, assembly to confirm) "
+                 f"{_pct(provisional, total_reg_groups)}, "
+                 f"**ambiguous** (FR numbering bucket, never composed) "
+                 f"{_pct(ambiguous, total_reg_groups)}. All three are safe "
+                 f"non-fabrication outcomes; only `resolved` is a committed 1:1 identity.")
         L.append("")
         L.append("### Group-size distribution (collision files)")
         L.append("")
@@ -330,7 +373,8 @@ def render_report(res: ManifestResult) -> str:
         L.append("")
 
     L.append(EXIT_SECTION)
-    return "\n".join(L) + "\n"
+    # Exactly one trailing newline (no blank line at EOF — `git diff --check`).
+    return "\n".join(L).rstrip("\n") + "\n"
 
 
 def main(argv: Sequence[str] | None = None) -> None:

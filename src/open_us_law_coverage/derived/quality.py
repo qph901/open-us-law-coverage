@@ -143,10 +143,18 @@ class QualityAnnotation:
                 f"source_record edge (target={self.target_source_record_id!r}, "
                 f"edges={self.provenance.source_record_ids()})"
             )
-        if not self.provenance.input_ids_of(InputType.ANNOTATION):
+        # Exactly one scope edge (not "at least one" — NEXT.md: inputs are exactly
+        # ``[scope, target]``), and nothing beyond the [scope, target] pair.
+        if len(self.provenance.input_ids_of(InputType.ANNOTATION)) != 1:
             raise ValueError(
-                "QualityAnnotation provenance must name its DuplicateScope as an "
-                "annotation input"
+                "QualityAnnotation provenance must name exactly one DuplicateScope as "
+                f"its annotation input (got "
+                f"{self.provenance.input_ids_of(InputType.ANNOTATION)})"
+            )
+        if len(self.provenance.inputs) != 2:
+            raise ValueError(
+                "QualityAnnotation provenance inputs must be exactly [scope, target], "
+                f"got {self.provenance.inputs}"
             )
         assign_payload_hash(
             self,
@@ -162,11 +170,29 @@ class QualityAnnotation:
 
 @dataclass(frozen=True, slots=True)
 class DuplicateDetectionResult:
-    """The full output of one detector run: the scope artifact plus one
-    annotation per member, in input order."""
+    """The full output of one detector run: the scope artifact plus **exactly one**
+    annotation per scope member, each linked back to the scope (input order preserved).
+    """
 
     scope: DuplicateScope
     annotations: tuple[QualityAnnotation, ...]
+
+    def __post_init__(self) -> None:
+        scope_members = set(self.scope.member_source_record_ids)
+        targets = [a.target_source_record_id for a in self.annotations]
+        if len(targets) != len(scope_members) or set(targets) != scope_members:
+            raise ValueError(
+                "DuplicateDetectionResult must carry exactly one annotation per scope "
+                f"member (scope={sorted(scope_members)}, "
+                f"annotation targets={sorted(targets)})"
+            )
+        scope_id = self.scope.provenance.artifact_id
+        for a in self.annotations:
+            if a.provenance.input_ids_of(InputType.ANNOTATION) != (scope_id,):
+                raise ValueError(
+                    f"quality annotation for {a.target_source_record_id!r} does not "
+                    f"link to this scope (expected annotation edge {scope_id!r})"
+                )
 
 
 def is_duplicate_row(annotation: QualityAnnotation) -> bool:

@@ -93,7 +93,15 @@ def _is_numeric_id(identifier: str | None) -> bool:
     return identifier.replace(".", "").replace("-", "").isdigit()
 
 
-def analyze_ca(path: str | Path) -> CaProbeResult:
+def analyze_ca(path: str | Path, snapshot_version: str) -> CaProbeResult:
+    """Run every built producer over the CA corpus under ``snapshot_version``.
+
+    The snapshot is threaded into ``iter_source_records`` so every ``source_record_id``
+    — and therefore every derived artifact id built here — is computed under the
+    requested snapshot, not a placeholder (M1A.5 review P6). The report body is
+    aggregate counts, so the *numbers* are snapshot-independent, but the provenance
+    chain must be the real one for this to be evidence of v2026.08.
+    """
     path = Path(path)
     res = CaProbeResult(corpus=path.name.replace(".parquet", ""))
 
@@ -104,7 +112,7 @@ def analyze_ca(path: str | Path) -> CaProbeResult:
     # One streaming, row-group-bounded pass runs every *built* producer over each
     # row: classification, hierarchy, identity (group + member annotation), duplicate
     # detection within that group, and the trivial assembly (full corpus, not sampled).
-    for rec in iter_source_records(path, snapshot_version="probe"):
+    for rec in iter_source_records(path, snapshot_version=snapshot_version):
         res.rows += 1
         act_id = rec.column("act_id")
         act_ids.add(act_id)
@@ -310,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     ap.add_argument("--out", help="write the Markdown report here (else stdout)")
     args = ap.parse_args(argv)
 
-    res = analyze_ca(args.path)
+    res = analyze_ca(args.path, args.snapshot)
     report = render_report(res, args.snapshot)
     if args.out:
         Path(args.out).write_text(report)

@@ -4,8 +4,14 @@ Every derived artifact carries one of these. The load-bearing properties
 (``PROPOSAL.md`` "Data contracts"):
 
 * ``artifact_id = hash(sorted(input_ids), artifact_type, producer_name,
-  producer_version, config_hash)`` with ``generated_at`` **excluded** — so the id
-  is content-addressed and a byte-identical recompute yields the same id.
+  producer_version, config_hash)`` with ``generated_at`` **excluded**. This is a
+  *derivation* address, not the semantic body: it is a pure function of the declared
+  inputs + producer identity + config, so it is pre-computable before the body
+  exists (that is what the recompute frontier relies on). The semantic body is
+  addressed separately by ``payload_hash`` (NEXT.md D2) — equal ``artifact_id`` means
+  equal derivation, **not** necessarily an equal conclusion body; the
+  :func:`check_payload_collisions` tripwire is what rejects a body that drifted under
+  a stale id.
 * ``inputs[]`` are the **DAG edges**. Because the input set is *sorted* before
   hashing, two artifacts over different member sets never collide, and the DAG
   makes the recompute frontier on a new snapshot **computable** (recompute
@@ -61,6 +67,12 @@ class ArtifactType(StrEnum):
     # scopes (M1A.5 review B1).
     DUPLICATE_SCOPE = "duplicate_scope"
     SOURCE_DOCUMENT_ASSEMBLY = "source_document_assembly"
+    # The versioned, mutable link from an identity strategy's key (+ ``legal_id``) to
+    # an immutable assembly artifact (NEXT.md A.2/A.3). It is a derived artifact like
+    # any other — it carries provenance (an ``assembly`` edge to the body it links)
+    # and a ``payload_hash`` — but it deliberately does NOT put the mutable key on the
+    # content-addressed assembly: the key rides in this artifact's own body instead.
+    ASSEMBLY_IDENTITY_ASSOCIATION = "assembly_identity_association"
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +215,13 @@ def canonicalize_inputs(inputs: Iterable[ArtifactInput]) -> tuple[ArtifactInput,
 
     Input order is **not** semantically load-bearing (the id sorts before hashing),
     so the *stored* edges are sorted by the same key. This makes equal ``artifact_id``
-    imply an equal serialized ``inputs`` tuple — two provenances built from the same
-    set in different orders are byte-identical objects, not just id-equal (M1A.5
-    review P1). Callers that need input-order correspondence keep it separately (e.g.
-    the per-member annotation list produced alongside a scope artifact).
+    imply an equal serialized *provenance* tuple — two provenance nodes built from the
+    same set in different orders are byte-identical (M1A.5 review P1). Note the scope:
+    this is a statement about the ``DerivedArtifactProvenance`` node, **not** the
+    derived artifact carrying it — equal ``artifact_id`` does not by itself imply an
+    equal conclusion body (that is what ``payload_hash`` addresses; D2). Callers that
+    need input-order correspondence keep it separately (e.g. the per-member annotation
+    list produced alongside a scope artifact).
     """
     return tuple(sorted(inputs, key=_canonical_input))
 

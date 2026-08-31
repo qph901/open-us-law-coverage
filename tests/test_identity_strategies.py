@@ -10,7 +10,10 @@ ambiguous (never composed), occurrence-index disambiguation of byte-identical ro
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 from open_us_law_coverage.derived import (
     IdentityMember,
@@ -33,8 +36,10 @@ from open_us_law_coverage.derived.identity_strategies import (
     CFR_IDENTITY_V1,
     CONSTITUTION_ACT_ID_V1,
     FEDERAL_REGISTER_DOCUMENT_V1,
+    STATE_REGULATION_V1,
     STATE_STATUTE_ACT_ID_V1,
     USC_ACT_ID_V1,
+    state_regulation_identity_group,
 )
 from open_us_law_coverage.source_record import read_source_records
 from tests.conftest import SNAPSHOT
@@ -208,3 +213,142 @@ def test_router_dispatches_by_namespace():
     assert state.group.strategy_name == "state_regulation_v1"
     assert state.group.identity_status == IdentityStatus.PROVISIONAL
     assert state.group.identity_scope == IdentityScope.SEGMENT
+
+
+# ---------------------------------------------------------------------------
+# Finding P1-2 — dispatch is by authoritative document_type, never the ambiguous
+# STATE_* prefix.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _FakeRecord:
+    """A duck-typed stand-in for a CanonicalSourceRecord — the strategies read only
+    ``.source_record_id`` / ``.column(name)`` / ``.source_file`` / ``.raw_text_hash`` /
+    ``.physical_row_ordinal`` (via ``identity_member``)."""
+
+    source_file: str
+    _cols: dict
+    source_record_id: str = "srr:sha256:x"
+    raw_text_hash: str | None = "sha256:deadbeef"
+    physical_row_ordinal: int = 0
+
+    def column(self, name: str):
+        return self._cols.get(name)
+
+
+def _rec(act_id: str, document_type: str, *, state: str, source_file: str) -> _FakeRecord:
+    return _FakeRecord(
+        source_file=source_file,
+        _cols={"act_id": act_id, "state": state, "document_type": document_type},
+    )
+
+
+def test_state_regulation_is_not_dispatched_as_a_statute():
+    """A ``STATE_*`` *regulation* must return ``None`` from the 1:1 dispatcher — it is
+    grouped by the collision strategies, never falsely resolved as a state statute."""
+    reg = _rec(
+        "STATE_OH_ADC_117_3_11", "regulation", state="OH",
+        source_file="us_oh_regulations.parquet",
+    )
+    assert resolve_single_record_identity(reg) is None
+
+
+def test_state_statute_with_same_prefix_still_dispatches_to_statute():
+    """The same ``STATE_*`` prefix on a *statute* dispatches to the state-statute 1:1
+    strategy — the prefix is shared, the authoritative ``document_type`` is not."""
+    stat = _rec(
+        "STATE_OH_RC_1_01", "statute", state="OH",
+        source_file="us_oh_statutes.parquet",
+    )
+    result = resolve_single_record_identity(stat)
+    assert result is not None
+    assert result.group.strategy_name == STATE_STATUTE_ACT_ID_V1
+
+
+def test_dispatch_uses_document_type_not_prefix():
+    """Court-rules / guidance (no concrete 1:1 strategy, non-statute document_type)
+    abstain to ``None`` rather than being force-fit by a prefix."""
+    guidance = _rec(
+        "STATE_OH_GUIDE_1", "guidance", state="OH",
+        source_file="us_oh_guidance.parquet",
+    )
+    assert resolve_single_record_identity(guidance) is None
+
+
+# ---------------------------------------------------------------------------
+# Finding P2-5 — collision producers reject malformed / heterogeneous groups.
+# ---------------------------------------------------------------------------
+
+def test_cfr_group_rejects_mixed_namespace_members():
+    """The adversarial group the review built: a CFR row and an FR row together. They
+    have distinct act_ids, so they cannot share one grouping key — rejected, never
+    labeled with the first member's key."""
+    with pytest.raises(ValueError):
+        cfr_identity_group([_cfr_member("a", 1, "h"), _fr_member("b", 2, "g")])
+
+
+def test_cfr_group_rejects_a_statute_member():
+    """A state statute smuggled into a CFR group is rejected on corpus/type."""
+    statute = IdentityMember(
+        source_record_id="s",
+        act_id="CFR_T17_P240_S240.10b-5",
+        state="US",
+        corpus="statutes",
+        document_type="statute",
+        raw_text_hash="h",
+        physical_row_ordinal=9,
+    )
+    with pytest.raises(ValueError):
+        cfr_identity_group([_cfr_member("a", 1, "h"), statute])
+
+
+def test_cfr_producer_rejects_a_wrong_namespace_group():
+    """A homogeneous FR group handed to the CFR producer is rejected — each concrete
+    producer validates its own namespace."""
+    with pytest.raises(ValueError):
+        cfr_identity_group([_fr_member("a", 1, "h"), _fr_member("b", 2, "g")])
+
+
+def test_fr_producer_rejects_a_cfr_group():
+    with pytest.raises(ValueError):
+        federal_register_document_group([_cfr_member("a", 1, "h"), _cfr_member("b", 2, "g")])
+
+
+def test_state_producer_rejects_a_cfr_group():
+    with pytest.raises(ValueError):
+        state_regulation_identity_group([_cfr_member("a", 1, "h"), _cfr_member("b", 2, "g")])
+
+
+def test_regulation_group_rejects_empty_act_id():
+    bad = IdentityMember(
+        source_record_id="b",
+        act_id=None,
+        state="US",
+        corpus="regulations",
+        document_type="regulation",
+        raw_text_hash="h",
+        physical_row_ordinal=2,
+    )
+    with pytest.raises(ValueError):
+        cfr_identity_group([_cfr_member("a", 1, "h"), bad])
+
+
+def test_state_regulation_group_rejects_mixed_state():
+    """The grouping key is `(state, corpus, act_id)` — not act_id alone. Two rows that
+    share an act_id but sit under *different* states are two groups, not one, so a
+    producer must reject them rather than key the pair from the first member's state.
+    (A shared administrative-code numbering across states is exactly how a silent
+    cross-jurisdiction merge would be born.)"""
+    def member(rid: str, state: str, ordinal: int) -> IdentityMember:
+        return IdentityMember(
+            source_record_id=rid,
+            act_id="STATE_ADC_109_1_1_03",
+            state=state,
+            corpus="regulations",
+            document_type="regulation",
+            raw_text_hash="h",
+            physical_row_ordinal=ordinal,
+        )
+
+    with pytest.raises(ValueError):
+        state_regulation_identity_group([member("a", "OH", 1), member("b", "IN", 2)])

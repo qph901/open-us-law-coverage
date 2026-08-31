@@ -184,11 +184,21 @@ class SourceIdentityMemberAnnotation:
                 f"one source_record edge (target={self.target_source_record_id!r}, "
                 f"edges={self.provenance.source_record_ids()})"
             )
-        # It must also anchor to a group (an ANNOTATION edge — the group artifact_id).
-        if not self.provenance.input_ids_of(InputType.ANNOTATION):
+        # It must anchor to exactly one group — a single ANNOTATION edge (the group
+        # artifact_id). "Exactly one", not "at least one" (NEXT.md: inputs are exactly
+        # ``[group, target]``): a second annotation edge would let one member claim
+        # membership in two groups under one conclusion id.
+        if len(self.provenance.input_ids_of(InputType.ANNOTATION)) != 1:
             raise ValueError(
-                "member annotation provenance must name its SourceIdentityGroup as an "
-                "annotation input"
+                "member annotation provenance must name exactly one SourceIdentityGroup "
+                f"as its annotation input (got "
+                f"{self.provenance.input_ids_of(InputType.ANNOTATION)})"
+            )
+        # ...and nothing else: the inputs are exactly [group, target].
+        if len(self.provenance.inputs) != 2:
+            raise ValueError(
+                "member annotation provenance inputs must be exactly [group, target], "
+                f"got {self.provenance.inputs}"
             )
         assign_payload_hash(
             self,
@@ -207,8 +217,28 @@ class SourceIdentityMemberAnnotation:
 @dataclass(frozen=True, slots=True)
 class SourceIdentityResult:
     """The full output of one identity-strategy run over a group: the group artifact
-    plus one member annotation per member (member order preserved), mirroring
-    :class:`~.quality.DuplicateDetectionResult`."""
+    plus **exactly one** member annotation per group member, each linked back to the
+    group (member order preserved), mirroring :class:`~.quality.DuplicateDetectionResult`.
+    """
 
     group: SourceIdentityGroup
     members: tuple[SourceIdentityMemberAnnotation, ...]
+
+    def __post_init__(self) -> None:
+        group_members = set(self.group.member_source_record_ids)
+        targets = [m.target_source_record_id for m in self.members]
+        # A bijection: one annotation per group member, no duplicates, no strays.
+        if len(targets) != len(group_members) or set(targets) != group_members:
+            raise ValueError(
+                "SourceIdentityResult must carry exactly one member annotation per "
+                f"group member (group={sorted(group_members)}, "
+                f"annotation targets={sorted(targets)})"
+            )
+        # Every annotation must name *this* group as its annotation edge.
+        group_id = self.group.provenance.artifact_id
+        for m in self.members:
+            if m.provenance.input_ids_of(InputType.ANNOTATION) != (group_id,):
+                raise ValueError(
+                    f"member annotation for {m.target_source_record_id!r} does not "
+                    f"link to this group (expected annotation edge {group_id!r})"
+                )

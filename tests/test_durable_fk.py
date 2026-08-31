@@ -15,10 +15,11 @@ mutable ``source_identity_key``. The key/``legal_id`` live on a separate version
 :class:`AssemblyIdentityAssociation` (review B3), not on the content-addressed
 assembly.
 
-**B.3: exercised against actual producer outputs**, not fabricated annotations. Two
-real strategies over one member set stand in for the strategy-improvement (v1->v2)
-case: different strategy identity => different key and group id, same physical
-anchors.
+**B.3: exercised against actual producer outputs**, not fabricated annotations. A
+genuine **v1 vs v2 of one strategy** (``cfr_identity_v1``) over one valid member set
+tests the strategy-improvement case: the real v1 producer vs. a v2 that makes a real
+rule change (``provisional`` -> ``resolved``), so same producer name / same anchors,
+different version + different conclusion body — coexisting without a payload collision.
 """
 
 from __future__ import annotations
@@ -26,19 +27,27 @@ from __future__ import annotations
 from pathlib import Path
 
 from open_us_law_coverage.derived import (
+    ArtifactInput,
     ArtifactType,
     AssemblyStatus,
     AssemblyStrategy,
     DerivedArtifactProvenance,
+    Evidence,
     IdentityMember,
+    IdentityScope,
+    IdentityStatus,
     InputType,
     MemberRole,
     Operation,
+    SegmentOrderConfidence,
+    SegmentOrderMethod,
     SourceDocumentAssembly,
+    SourceIdentityGroup,
+    SourceIdentityMemberAnnotation,
+    SourceIdentityResult,
     associate_assembly_with_identity,
     cfr_identity_group,
     check_payload_collisions,
-    federal_register_document_group,
     resolve_single_record_identity,
     source_record_inputs,
 )
@@ -50,12 +59,15 @@ from open_us_law_coverage.derived.assembly import (
 from open_us_law_coverage.source_record import read_source_records
 from tests.conftest import SNAPSHOT
 
+_CFR_ACT_ID = "CFR_T17_P240_S240.10b-5"
+_CFR_KEY = f"US|regulations|{_CFR_ACT_ID}"
+
 
 def _members(n: int) -> list[IdentityMember]:
     return [
         IdentityMember(
             source_record_id=f"srr:sha256:r{i}",
-            act_id="X_1",
+            act_id=_CFR_ACT_ID,
             state="US",
             corpus="regulations",
             document_type="regulation",
@@ -66,23 +78,83 @@ def _members(n: int) -> list[IdentityMember]:
     ]
 
 
-def test_two_real_strategies_coexist_over_same_records():
-    """Strategy A (cfr_identity_v1) and strategy B (federal_register_document_v1) over
-    one member set stand in for the strategy-improvement (v1->v2) case: two distinct
-    group artifacts (different producer identity => different ``artifact_id`` and a
-    different conclusion body) over one physical anchor set, both valid at once. The
-    ``source_identity_key`` is strategy-independent by design — the durable-FK
-    guarantee is not that the key differs but that no immutable artifact hashes it."""
-    members = _members(3)
-    a = cfr_identity_group(members)
-    b = federal_register_document_group(members)
+def _cfr_group_at_version(
+    members: list[IdentityMember], *, version: str, status: IdentityStatus
+) -> SourceIdentityResult:
+    """A hand-built ``cfr_identity_v1`` at an arbitrary producer version + rule outcome.
 
-    assert a.group.provenance.artifact_id != b.group.provenance.artifact_id
-    assert a.group.payload_hash != b.group.payload_hash  # different conclusion bodies
+    Stands in for a legitimate future v2 of the *same* strategy: same producer name
+    (``cfr_identity_v1``), a different ``producer_version``, and a genuine rule-shape
+    difference (the multi-segment ``status``). Used only to exercise the version
+    boundary the real code does not yet cross."""
+    ids = tuple(sorted(m.source_record_id for m in members))
+    group_prov = DerivedArtifactProvenance.build(
+        ArtifactType.SOURCE_IDENTITY_GROUP,
+        source_record_inputs(ids),
+        "cfr_identity_v1",
+        version,
+    )
+    group = SourceIdentityGroup(
+        provenance=group_prov,
+        strategy_name="cfr_identity_v1",
+        source_identity_key=_CFR_KEY,
+        member_source_record_ids=ids,
+        identity_scope=IdentityScope.SEGMENT,
+        identity_status=status,
+        confidence=1.0,
+        evidence=(Evidence("version_boundary", f"cfr_identity_v1 producer v{version}"),),
+    )
+    anns = []
+    for ordinal, m in enumerate(sorted(members, key=lambda x: x.source_record_id)):
+        ann_prov = DerivedArtifactProvenance.build(
+            ArtifactType.SOURCE_IDENTITY_MEMBER_ANNOTATION,
+            (
+                ArtifactInput(InputType.ANNOTATION, group.provenance.artifact_id),
+                ArtifactInput(InputType.SOURCE_RECORD, m.source_record_id),
+            ),
+            "cfr_identity_v1",
+            version,
+        )
+        anns.append(
+            SourceIdentityMemberAnnotation(
+                provenance=ann_prov,
+                target_source_record_id=m.source_record_id,
+                segment_ordinal=ordinal,
+                segment_order_method=SegmentOrderMethod.PHYSICAL_ROW_ORDER,
+                segment_order_confidence=SegmentOrderConfidence.SNAPSHOT_OBSERVED,
+            )
+        )
+    return SourceIdentityResult(group=group, members=tuple(anns))
+
+
+def test_identity_v1_v2_of_one_strategy_coexist_over_same_records():
+    """A genuine version boundary (NEXT.md B.3): the real ``cfr_identity_v1`` producer
+    (v1, ``provisional``) and a v2 of the *same* strategy that makes a real rule change
+    (``resolved``) over one physical member set. Same producer name and same physical
+    anchors; different ``producer_version`` and a different conclusion body — so two
+    distinct ``artifact_id``s that coexist without a payload collision."""
+    members = _members(3)
+    v1 = cfr_identity_group(members)  # the real producer: version "1", provisional
+    v2 = _cfr_group_at_version(members, version="2", status=IdentityStatus.RESOLVED)
+
+    assert v1.group.provenance.producer_name == v2.group.provenance.producer_name
+    assert v1.group.provenance.producer_version == "1"
+    assert v2.group.provenance.producer_version == "2"
+    assert v1.group.identity_status != v2.group.identity_status  # a real rule change
+    assert v1.group.provenance.artifact_id != v2.group.provenance.artifact_id
+    assert v1.group.payload_hash != v2.group.payload_hash  # different conclusion bodies
+
     anchors = tuple(sorted(m.source_record_id for m in members))
-    assert a.group.provenance.source_record_ids() == anchors
-    assert b.group.provenance.source_record_ids() == anchors
-    check_payload_collisions([a.group, b.group, *a.members, *b.members])
+    assert v1.group.provenance.source_record_ids() == anchors
+    assert v2.group.provenance.source_record_ids() == anchors
+    # no immutable edge in either version references the mutable identity key.
+    for result in (v1, v2):
+        edges = {e.input_id for e in result.group.provenance.inputs}
+        for m in result.members:
+            edges |= {e.input_id for e in m.provenance.inputs}
+        assert result.group.source_identity_key not in edges
+    # both versions and all their member annotations coexist in one store.
+    check_payload_collisions([v1.group, v2.group, *v1.members, *v2.members])
 
 
 def test_no_provenance_edge_references_the_identity_key():

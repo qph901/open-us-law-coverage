@@ -35,9 +35,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from .provenance import (
+    ArtifactInput,
     ArtifactType,
     DerivedArtifactProvenance,
     Evidence,
+    InputType,
     assign_payload_hash,
     source_record_inputs,
 )
@@ -191,33 +193,75 @@ class SourceDocumentAssembly:
 
 @dataclass(frozen=True, slots=True)
 class AssemblyIdentityAssociation:
-    """A versioned, explicit link from an identity strategy's key to an immutable
-    assembly artifact — **not** a field on the content-addressed assembly.
+    """A versioned link from an identity strategy's key (+ ``legal_id``) to an
+    immutable assembly artifact — **not** a field on the content-addressed assembly.
 
     This is where the mutable ``source_identity_key`` lives and where ``legal_id``
     attaches. It may be re-emitted with a new ``strategy_version`` (and a different
     key) when an identity strategy improves, without producing two assembly bodies
     under one ``assembly_artifact_id`` (M1A.5 review B3).
+
+    It is a **first-class derived artifact** like every other (NEXT.md A.2/A.3): it
+    carries a :class:`DerivedArtifactProvenance` — one ``assembly`` edge to the body it
+    links — and a validated ``payload_hash``, so the collision tripwire covers it too.
+    The distinction from the assembly it points at is *where the key lives*: the key
+    (and ``legal_id``) ride in **this** artifact's body, never on the content-addressed
+    assembly. The key is deliberately **not** a provenance edge (the durable-FK rule);
+    it is folded into the derivation ``config_hash`` so two keys pointing at one
+    assembly get two distinct ``artifact_id``s instead of colliding.
     """
 
+    provenance: DerivedArtifactProvenance
     source_identity_key: str
     assembly_artifact_id: str
-    strategy_name: str
-    strategy_version: str
     legal_id: str | None = None
+    payload_hash: str = ""
     evidence: tuple[Evidence, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        if self.provenance.artifact_type != ArtifactType.ASSEMBLY_IDENTITY_ASSOCIATION:
+            raise ValueError(
+                f"association provenance must be artifact_type "
+                f"{ArtifactType.ASSEMBLY_IDENTITY_ASSOCIATION}, got "
+                f"{self.provenance.artifact_type}"
+            )
         # An association with an empty key or dangling assembly id is a bug — it would
-        # anchor ``legal_id`` to nothing (NEXT.md A.3). It carries no ``payload_hash``
-        # of its own: it is a mutable link, deliberately *outside* the content-addressed
-        # assembly, so it is never run through the collision tripwire.
+        # anchor ``legal_id`` to nothing (NEXT.md A.3).
         if not self.source_identity_key:
             raise ValueError("source_identity_key must be non-empty")
         if not self.assembly_artifact_id:
             raise ValueError("assembly_artifact_id must be non-empty")
-        if not self.strategy_name or not self.strategy_version:
-            raise ValueError("strategy_name and strategy_version must be non-empty")
+        # The single provenance edge is the assembly this association links, and it is
+        # named as an ``assembly`` edge (never a ``source_record`` — the association
+        # rests on the composed body, not the physical rows directly).
+        if self.provenance.input_ids_of(InputType.ASSEMBLY) != (
+            self.assembly_artifact_id,
+        ):
+            raise ValueError(
+                "association provenance must name exactly its assembly as the one "
+                f"assembly edge (assembly={self.assembly_artifact_id!r}, edges="
+                f"{self.provenance.input_ids_of(InputType.ASSEMBLY)})"
+            )
+        if len(self.provenance.inputs) != 1:
+            raise ValueError(
+                "association provenance inputs must be exactly [assembly], got "
+                f"{self.provenance.inputs}"
+            )
+        # The mutable key must NEVER be a provenance edge (durable-FK rule).
+        if self.source_identity_key in {e.input_id for e in self.provenance.inputs}:
+            raise ValueError("source_identity_key must not be a provenance edge")
+        assign_payload_hash(
+            self,
+            ArtifactType.ASSEMBLY_IDENTITY_ASSOCIATION,
+            {
+                "source_identity_key": self.source_identity_key,
+                "assembly_artifact_id": self.assembly_artifact_id,
+                "legal_id": self.legal_id,
+                "producer_name": self.provenance.producer_name,
+                "producer_version": self.provenance.producer_version,
+                "evidence": list(self.evidence),
+            },
+        )
 
 
 def assemble_trivial_single_record(
@@ -289,12 +333,29 @@ def associate_assembly_with_identity(
     """Link an identity key (and optionally a ``legal_id``) to an assembly artifact.
 
     Kept out of the content-addressed assembly on purpose (M1A.5 review B3): key A
-    and key B may both point at one ``assembly_artifact_id`` without changing it.
+    and key B may both point at one ``assembly_artifact_id`` without changing it. They
+    do get distinct association ``artifact_id``s, because the key (+ ``legal_id``) is
+    folded into the derivation ``config_hash`` — so the collision tripwire never fires
+    on two legitimately-different associations over one assembly.
     """
+    if not strategy_name or not strategy_version:
+        raise ValueError("strategy_name and strategy_version must be non-empty")
+    assembly_id = assembly.provenance.artifact_id
+    # The key + legal_id distinguish two associations over the same assembly; they are
+    # the derivation config (never a provenance edge — the durable-FK rule).
+    config_hash = hashlib.sha256(
+        "\x00".join((source_identity_key, legal_id or "")).encode("utf-8")
+    ).hexdigest()
+    provenance = DerivedArtifactProvenance.build(
+        ArtifactType.ASSEMBLY_IDENTITY_ASSOCIATION,
+        (ArtifactInput(InputType.ASSEMBLY, assembly_id),),
+        strategy_name,
+        strategy_version,
+        config_hash=config_hash,
+    )
     return AssemblyIdentityAssociation(
+        provenance=provenance,
         source_identity_key=source_identity_key,
-        assembly_artifact_id=assembly.provenance.artifact_id,
-        strategy_name=strategy_name,
-        strategy_version=strategy_version,
+        assembly_artifact_id=assembly_id,
         legal_id=legal_id,
     )

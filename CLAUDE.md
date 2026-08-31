@@ -158,12 +158,15 @@ emit Markdown; neither has runtime dependencies on the other:
   golden-fixture suites (`tests/test_derived_provenance.py`, `test_classification.py`,
   `test_quality_duplicate.py`, `test_assembly_trivial.py`, and the headline `test_durable_fk.py`).
   `provenance.py` is the **multi-input DAG** — `DerivedArtifactProvenance.build(...)` computes a
-  content-addressed `artifact_id = compute_artifact_id(artifact_type, sorted(inputs), producer_name,
+  *derivation*-addressed `artifact_id = compute_artifact_id(artifact_type, sorted(inputs), producer_name,
   producer_version, config_hash)` with `generated_at` **excluded**; edges are `ArtifactInput(input_type,
   input_id)` and durable references anchor to `source_record_id` (never `source_identity_key`). **Stored
   `inputs` are canonicalized (sorted) too** (M1A.5 review P1: `canonicalize_inputs`), so equal
-  `artifact_id` ⇒ byte-identical serialized object (reversing inputs yields the same object, not just
-  the same id); the same rule canonicalizes `DuplicateScope.member_source_record_ids`.
+  `artifact_id` ⇒ byte-identical serialized **provenance node** (reversing inputs yields the same node,
+  not just the same id) — a claim about the provenance, **not** the whole artifact: `artifact_id` is a
+  *derivation* address, and the semantic body is addressed separately by `payload_hash` (D2), so equal
+  `artifact_id` alone does not imply an equal conclusion body; the same rule canonicalizes
+  `DuplicateScope.member_source_record_ids`.
   `DerivedArtifactProvenance` also carries model invariants (M1A.5 review P6): a directly-constructed
   node whose stored `artifact_id` doesn't content-address its inputs, or that has duplicate edges /
   empty producer ids, is rejected; `Evidence.confidence` is range-checked. Producers, each anchoring
@@ -190,7 +193,17 @@ emit Markdown; neither has runtime dependencies on the other:
   status/text matrix** holds (`complete`/`partial` ⇒ non-null returnable text; `noncomposable`/`ambiguous`
   ⇒ null text; hash follows text). The assembly is content-addressed by its physical members and carries
   **no `source_identity_key`** — the mutable key + `legal_id` live on a separate versioned
-  `AssemblyIdentityAssociation` via `associate_assembly_with_identity`, so key A/B point at one assembly id. Closed vocabularies are `enum.StrEnum` (3.12).
+  `AssemblyIdentityAssociation` via `associate_assembly_with_identity`, so key A/B point at one assembly id.
+  That association is a **first-class derived artifact** (M1A.5 review P1-4): it carries its own
+  `DerivedArtifactProvenance` (one `assembly` edge to the body it links) + a validated `payload_hash`, so
+  the collision tripwire covers it; the mutable key is folded into `config_hash` (never a provenance edge —
+  the durable-FK rule), so two keys over one assembly get two distinct `artifact_id`s instead of colliding.
+  **Annotation edges are exactly `[group/scope, target]`** (M1A.5 review): `SourceIdentityMemberAnnotation`
+  and `QualityAnnotation` require *exactly one* group/scope edge and *exactly two* inputs total ("at least
+  one" would let one conclusion claim membership in two groups), and `SourceIdentityResult` /
+  `DuplicateDetectionResult` validate a **bijection** — exactly one annotation per member, each linking
+  back to *this* group/scope.
+  Closed vocabularies are `enum.StrEnum` (3.12).
   **Identity is a content-addressed group + per-member annotations** (`identity.py`, NEXT.md D1): `SourceIdentityGroup`
   (keyed by the complete member set) + `SourceIdentityMemberAnnotation` (names `[group, this record]`; the
   scalar segment fields — fingerprint/ordinal/method/confidence — bind to the member, never the group) —
@@ -198,19 +211,33 @@ emit Markdown; neither has runtime dependencies on the other:
   carries a `payload_hash`** (`provenance.py`, NEXT.md D2): the semantic content address, orthogonal to the
   derivation-address `artifact_id`, validated in `__post_init__`; `check_payload_collisions` is the
   equal-id/unequal-payload tripwire. The **concrete strategies are built** in `identity_strategies.py`:
-  `usc_act_id_v1`/`state_statute_act_id_v1`/`constitution_act_id_v1` (1:1, via `resolve_single_record_identity`)
+  `usc_act_id_v1`/`state_statute_act_id_v1`/`constitution_act_id_v1` (1:1, via `resolve_single_record_identity`,
+  which **dispatches by the authoritative `document_type` column, never the ambiguous `act_id` prefix** —
+  M1A.5 review P1-2: a `STATE_*` prefix is shared by state statutes *and* state regulations, so a `regulation`
+  returns `None` here and is grouped by the collision path, never falsely resolved 1:1)
   and the regulations collision strategies `cfr_identity_v1`/`federal_register_document_v1`/`state_regulation_v1`
   (routed by `act_id` namespace via `regulations_identity_group`; they take a lightweight `IdentityMember`
-  view — no `raw_text` — so a full-file scan stays row-group-bounded). Only the CFR multi-row *composer*
+  view — no `raw_text` — so a full-file scan stays row-group-bounded, and each **validates group homogeneity +
+  its own namespace** before labeling — M1A.5 review P1-5: one shared `(state,corpus,act_id)` key, all
+  `regulation`/`regulations`, act_id in the producer's `CFR_`/`FR_`/`STATE_` namespace — an adversarial mixed
+  group is rejected, never mislabeled from the first member). Only the CFR multi-row *composer*
   (`cfr_source_assembly_v1`) is still deferred (CFR-A2). Duck-typed on `.source_record_id`/`.column('act_id')`,
   so `derived/` has **no runtime import** of the immutable core.
 - `src/open_us_law_coverage/identity_manifest.py` → `reports/M1A5_identity_manifest.md` (M1A.5 C.3). The
   deterministic full-snapshot identity manifest — scale evidence + next-snapshot regression fixture. **DuckDB**,
-  not pyarrow (the OOM invariant below): `COUNT(*) GROUP BY act_id` sizes every file; `md5(text)` + `SEMI JOIN`
-  streams out only the colliding rows (spilling under `--memory-limit`), which feed the real collision producers
-  + `detect_duplicate_rows` within each group. It measured that `act_id` collisions are a **regulations**
-  phenomenon and **not federal-only** (state administrative codes collide — the reason `state_regulation_v1`
-  exists). Byte-stable; regenerate with `--memory-limit 4GB --temp-dir <scratch>`.
+  not pyarrow (the OOM invariant below): `COUNT(*) GROUP BY act_id` sizes every file;
+  `'sha256:' || sha256(text)` + `SEMI JOIN` streams out only the colliding rows (spilling under
+  `--memory-limit`), which feed the real collision producers + `detect_duplicate_rows` within each group.
+  The text hash is the **exact canonical `compute_raw_text_hash` format** (M1A.5 review P1-1: DuckDB's
+  `sha256(VARCHAR)` over UTF-8 bytes, `sha256:`-prefixed, null on null text — byte-identical to the M1A
+  pipeline, so a manifest member and a canonical record for the same row share a `raw_text_hash`, hence a
+  `payload_hash`, and the D2 tripwire stays silent across the two paths; a bare `md5` made it fire). The
+  report keeps **two passes distinct** (M1A.5 review P1-7): structural `act_id` *sizing* runs over every file
+  (a count, **not** a producer run — no artifact constructed), while the concrete producers run **only over
+  the colliding groups**; single-member counts are structure, never called "producer output," and the outcome
+  split reports `resolved`/`provisional`/`ambiguous` **separately**. It measured that `act_id` collisions are a
+  **regulations** phenomenon and **not federal-only** (state administrative codes collide — the reason
+  `state_regulation_v1` exists). Byte-stable; regenerate with `--memory-limit 4GB --temp-dir <scratch>`.
 - `src/open_us_law_coverage/hierarchy.py` → `reports/M0.5B2_hierarchy.md` + `tests/test_hierarchy.py`
   (M0.5B2). Both a tested parser and a report harness. `parse_breadcrumb(breadcrumb_json)` is the pure
   core — it turns the `breadcrumb` JSON array (`{type,num,label,name}`, root→leaf) into a normalized
@@ -234,7 +261,10 @@ emit Markdown; neither has runtime dependencies on the other:
   (M0.5B3). The CA abstraction-falsification probe — **not** "run USC rules on CA"; it runs every
   *built* artifact type (M1A.5 annotations/assembly, `HierarchyNode[]`/`StructuralPath`) over the full
   CA statutes corpus (`iter_source_records`, row-group-bounded) and reports the interface changes CA
-  forces. Verdict: **none** to built types. Headline finding it exists to surface — **content
+  forces. `analyze_ca(path, snapshot_version)` threads the CLI `--snapshot` into `iter_source_records`
+  (M1A.5 review P1-6), so every `source_record_id` and derived-artifact id is built under the requested
+  snapshot, not a placeholder — the report body is aggregate counts, so the numbers are
+  snapshot-independent, but the provenance chain is the real v2026.08 one. Verdict: **none** to built types. Headline finding it exists to surface — **content
   duplication ≠ identity duplication**: CA has thousands of byte-identical rows across *distinct*
   provisions (distinct `act_id` + distinct `StructuralPath`), so `duplicate_row` is a content
   conclusion scoped to the identity group, never a `legal_id` merge. Anatomy (`AnatomySpan`) is not
